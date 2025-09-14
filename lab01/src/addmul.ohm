@@ -1,3 +1,19 @@
 AddMul {
- // Write the rules here
+ Exp
+ =AddExp
+
+ AddExp
+ = AddExp "+" MulExp -- plus
+ | MulExp
+ 
+ MulExp 
+ = MulExp "*" AtomExp -- mult
+ | AtomExp
+ 
+ AtomExp 
+ = "(" AddExp ")" -- braces
+ | number
+
+ number 
+ = digit+
 }
