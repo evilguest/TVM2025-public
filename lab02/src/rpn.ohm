@@ -1,3 +1,10 @@
 ReversePolishNotation {
-    // write rules here
+    Program = Item+ -- seq
+
+    Item    = number  -- lit
+          | "+"     -- plus
+          | "*"     -- mul
+
+    number  = "-"? digit+  -- int
+  
 }
