@@ -1,3 +1,28 @@
 Arithmetic {
-    // write rules here
+     Program = WS Exp WS End                         -- main
+
+  Exp     = AddExp
+  AddExp  = MulExp (AddOp MulExp)*                -- iter
+  MulExp  = UnaryExp (MulOp UnaryExp)*            -- iter
+
+ 
+  UnaryExp = (UnaryMinus)* Primary
+  Primary  = Int        --int
+           | Ident      --ident
+           | "(" Exp ")"--paren
+
+  AddOp   = "+" | "-"
+  MulOp   = "*" | "/"
+  UnaryMinus = "-"
+
+  identStart = letter | "_"
+  identRest  = alnum  | "_"
+  ident      = identStart identRest*
+  int        = digit+           
+
+  Ident = ident
+  Int   = int
+
+  WS    = space*
+  End   = ~any
 }
