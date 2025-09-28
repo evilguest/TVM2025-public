@@ -1,7 +1,7 @@
 ReversePolishNotation {
     Program = Item+ -- seq
 
-    Item    = number  -- lit
+    Item  = number  -- lit
           | "+"     -- plus
           | "*"     -- mul
 

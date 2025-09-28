@@ -11,14 +11,23 @@ export function evaluate(content: string, params?: {[name:string]:number}): numb
 }
 export class SyntaxError extends Error
 {
+    constructor(message = "Syntax error") {
+    super(message);
+    this.name = "SyntaxError";
+  }
 }
 
 export function parse(content: string): MatchResult
 {
-    throw "Not implemented";
+    const match =  grammar.match(content)
+    if (!match.succeeded()){
+        throw new SyntaxError(match.message || "Syntax error");
+    }
+
+    return match
 }
 
 function calculate(expression: MatchResult, params: {[name:string]: number}): number
 {
-    throw "Not implemented";
+    return arithSemantics(expression).calculate(params);
 }
