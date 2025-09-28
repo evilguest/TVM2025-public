@@ -1,10 +1,10 @@
 AddMul {
-  Exp = AddExp
-  AddExp = AddExp "+" MulExp  -- plus
-         | MulExp
-  MulExp = MulExp "*" PriExp  -- times
-         | PriExp
-  PriExp = number
-         | "(" Exp ")"  -- paren
-  number = digit+
+    Exp    = AddExp
+    AddExp = AddExp "+" MulExp  -- plus
+           | MulExp
+    MulExp = MulExp "*" BrExp  -- mul
+           | BrExp
+    BrExp  = "(" Exp ")"        -- braces
+           | number
+    number = digit+
 }
