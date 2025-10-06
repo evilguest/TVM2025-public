@@ -40,11 +40,9 @@ describe('testing subtraction and division', () => {
     test("Division by zero yields Error", 3, evaluate, Error, "8/0");
 });
 describe('testing unary negation', () => {
-    test("negation is supported in addition", 3, evaluate, 42, "43+-1");
-    test("negation is supported in subtraction", 4, evaluate, 42, "41--1");
-    test("double negation is supported", 4, evaluate, 42, "--1");
-    test("spacing is supported in negation", 4, evaluate, 42, `41 + - -\t
-        1`);
+    test("unary minus is supported", 3, evaluate, 42, "43+-1");
+    test("double unary minus is supported", 4, evaluate, 42, "41--1");
+    test("Unary minus supports spaces properly", 4, evaluate, 42, "43 - - -1");
 });
 describe('testing variables', () => {
     test("variables can be used", 3, evaluate, 42, "x+1", {x: 41});

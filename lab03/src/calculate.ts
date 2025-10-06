@@ -22,7 +22,7 @@ const arithCalc = {
         return acc
     },
 
-
+    
     MulExp_iter(head: any, _ops: any, _rights: any) {
          let acc = head.calculate(this.args.params);
         const n = _rights.children.length;
