@@ -79,23 +79,22 @@ This approach ensures smart resource allocation - if one doesn't have enough tim
 
 1. Download and install Node.js with pnpm for your platform: [https://nodejs.org/en/download][nodejs-dl]
 2. Checkout this project.
-3. Run a terminal at the project root location and execute
-
-   `pnpm install -r`
-
-   This will download and install the dependencies for all the labs
-4. (Optional) download and install VS Code: [https://code.visualstudio.com/Download][vscode-dl]
+3. (Optional) download and install VS Code: [https://code.visualstudio.com/Download][vscode-dl]
    - Install recommended extensions. Support for JavaScript and TypeScript is included in VS Code out of the box.
    Two extra tools would be handy
       - *Jest* extension helps you running the unit tests (that are going to be the basis of the excercise acceptance)
       - *Ohm-JS Language* extension helps you to write the PEG grammars extensively used throughout this course
-5. Build the labs
+
+4. Build the labs
    - **VS Code**: press Shift-Ctrl-B.
 
-   - **CLI**: run terminal at the root folder of any lab; execute `pnpm build`
+   - **CLI**:
 
-     Running `pnpm -r build` will build all labs at once.
-6. Run tests
+     1. Make sure the dependencies are installed by running `pnpm -r install` at the project root (only once)
+     2. Run terminal at the root folder of any lab; execute `pnpm build`
+     3. Running `pnpm -r build` at the workspace root will build all labs at once.
+
+5. Run tests
    **Note**: don't forget to set the desired mark via the `desiredMark.json`!
    - **VS Code**: switch to the Testing tab, hover the project root, click "Run Tests" icon
    - **CLI**: run the `jest` command at the project root

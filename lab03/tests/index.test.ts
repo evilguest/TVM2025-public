@@ -42,7 +42,7 @@ describe('testing subtraction and division', () => {
 describe('testing unary negation', () => {
     test("negation is supported in addition", 3, evaluate, 42, "43+-1");
     test("negation is supported in subtraction", 4, evaluate, 42, "41--1");
-    test("double negation is supported", 4, evaluate, 42, "--1"); //ошибка в тесте
+    test("double negation is supported", 4, evaluate, 42, "--1");
     test("spacing is supported in negation", 4, evaluate, 42, `41 + - -\t
         1`);
 });

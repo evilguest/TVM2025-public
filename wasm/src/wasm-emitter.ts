@@ -1186,7 +1186,31 @@ export const c = {
     assert(delta.v >= 0)
     return new instr_pre_imm(0x40, c.i32, [delta], [varuint1_0]) as any as Op<Int>
   },
+  array_length(array: Op<I64>): Op<I32> {
+    return c.i32.wrap_i64(c.i64.shr_u(array, c.i64.const(32)))
+  },
+  check_bounds: (array: Op<I64>, index: Op<I32>): Op<Void> =>
+     c.void_block([
+        c.if(c.void, c.i32.lt_s(index, c.i32.const(0)),
+        [c.unreachable], []),
+        c.if(c.void, c.i32.ge_s(index, c.array_length(array)),
+        [c.unreachable], [])
+    ]),
 
+  array_addr: (array: Op<I64>, index: Op<I32>): Op<I32> => 
+    c.i32.add(c.i32.wrap_i64(array), c.i32.shl(index, c.i32.const(2))),
+
+  array_get: (array: Op<I64>, index: Op<I32>): Op<I32> => 
+    c.block(c.i32, [
+        c.check_bounds(array, index),
+        c.i32.load(c.align32, c.array_addr(array, index))
+    ]),
+
+  array_set: (array: Op<I64>, index: Op<I32>, value: Op<I32>): Op<I32> => 
+    c.block(c.i32, [
+        c.check_bounds(array, index),
+        c.i32.store(c.align32, c.array_addr(array, index), value)
+    ]),
   // MemImm: Alignment          Offset
   align8:  [ varUint32Cache[0], varUint32Cache[0] ] as [VarUint32,Int],
   align16: [ varUint32Cache[1], varUint32Cache[0] ] as [VarUint32,Int],
@@ -1246,5 +1270,4 @@ export const get = {
       }
     }
   },
-
 }
