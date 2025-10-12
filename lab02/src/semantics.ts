@@ -3,7 +3,7 @@ import grammar from "./rpn.ohm-bundle";
 import { rpnStackDepth, StackDepth } from "./stackDepth";
 import { rpnCalc } from "./calculate";
 
-interface RpnDict  extends Dict {
+interface RpnDict extends Dict {
     calculate(): number;
     stackDepth: StackDepth;
 }
