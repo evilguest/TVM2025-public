@@ -107,17 +107,15 @@ function Div(a: Expr, b: Expr): Expr {
   if (isMinusOne(a)) return Neg(Div(one(), b));
   if (isMinusOne(b)) return Neg(a);
 
-  //  x/x = 1  (симв. тождество; как и всегда, вне точки x=0)
+  //  x/x = 1  
   if (eq(a, b)) return one();
 
-  // аккуратный фолдинг для целых
   if (a.kind === "Int" && b.kind === "Int" && b.value !== 0 && a.value % b.value === 0) {
     return { kind: "Int", value: Math.trunc(a.value / b.value) };
   }
   return { kind: "Div", left: a, right: b };
 }
 
-// Доп. упрощение одного шага для уже построенных узлов
 function simplify(e: Expr): Expr {
   switch (e.kind) {
     case "Int":
@@ -136,7 +134,7 @@ function simplify(e: Expr): Expr {
   }
 }
 
-// ---------- дифференцирование ----------
+
 export function derive(e: Expr, varName: string): Expr {
   const d = (node: Expr): Expr => {
     switch (node.kind) {
