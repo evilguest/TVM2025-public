@@ -1,72 +1,118 @@
 import { Expr } from "../../lab04";
 
-// ---------- маленькие конструкторы + предикаты ----------
 const zero = (): Expr => ({ kind: "Int", value: 0 });
 const one  = (): Expr => ({ kind: "Int", value: 1 });
 
-function isZero(e: Expr): boolean {
-  return e.kind === "Int" && e.value === 0;
+function isZero(e: Expr): boolean { return e.kind === "Int" && e.value === 0; }
+function isOne(e: Expr): boolean  { return e.kind === "Int" && e.value === 1; }
+function isMinusOne(e: Expr): boolean { return e.kind === "Int" && e.value === -1; }
+
+// проверка на равенство
+function eq(a: Expr, b: Expr): boolean {
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case "Int":   return b.kind === "Int"   && a.value === b.value;
+    case "Ident": return b.kind === "Ident" && a.name  === b.name;
+    case "Neg":   return eq(a.expr, (b as any).expr);
+    case "Add":
+    case "Sub":
+    case "Mul":
+    case "Div":
+      return eq(a.left, (b as any).left) && eq(a.right, (b as any).right);
+  }
 }
 
-function isOne(e: Expr): boolean {
-  return e.kind === "Int" && e.value === 1;
-}
-
-// Нормализующие конструкторы с упрощениями из требований уровня B
 function Neg(e: Expr): Expr {
-  // --x = x
-  if (e.kind === "Neg") return e.expr;
-  // -0 = 0
+ 
   if (isZero(e)) return zero();
 
-  if (e.kind === "Div") {
-    // -(u/v) = (-u)/v
-    return Div(Neg(e.left), e.right);
+  // -0 = 0
+  if (e.kind === "Int") {
+    const v = -e.value;
+    return v === 0 ? zero() : { kind: "Int", value: v };
   }
-  // -(u*v) = (-u)*v)
-  if (e.kind === "Mul") return Mul(Neg(e.left), e.right);
+
+  // --x = x
+  if (e.kind === "Neg") return e.expr;
 
   return { kind: "Neg", expr: e };
 }
 
+
 function Add(a: Expr, b: Expr): Expr {
-  // x + 0 = x; 0 + x = x
+  // 0 + x / x + 0
   if (isZero(a)) return b;
   if (isZero(b)) return a;
-  // Констант-фолдинг (по желанию, не обязателен)
+
+  // a + (-b) = a - b ; (-a) + b = b - a
+  if (b.kind === "Neg") return Sub(a, b.expr);
+  if (a.kind === "Neg") return Sub(b, a.expr);
+
+  // константы
   if (a.kind === "Int" && b.kind === "Int") return { kind: "Int", value: a.value + b.value };
+
   return { kind: "Add", left: a, right: b };
 }
 
 function Sub(a: Expr, b: Expr): Expr {
-  // x - 0 = x
+  // x - 0 = x ; 0 - x = -x
   if (isZero(b)) return a;
-  // 0 - x = -x
   if (isZero(a)) return Neg(b);
+
+  // x - x = 0
+  if (eq(a, b)) return zero();
+
+  // a - (-b) = a + b ; (-a) - b = -(a + b)
+  if (b.kind === "Neg") return Add(a, b.expr);
+  if (a.kind === "Neg") return Neg(Add(a.expr, b));
+
+  // константы
   if (a.kind === "Int" && b.kind === "Int") return { kind: "Int", value: a.value - b.value };
+
   return { kind: "Sub", left: a, right: b };
 }
 
 function Mul(a: Expr, b: Expr): Expr {
-  // x * 0 = 0 * x = 0
+  // x * 0 = 0 ; x * 1 = x
   if (isZero(a) || isZero(b)) return zero();
-  // x * 1 = 1 * x = x
   if (isOne(a)) return b;
   if (isOne(b)) return a;
+
+  // знаки: (-a)*(-b) = a*b ; (-a)*b = -(a*b) ; a*(-b) = -(a*b)
+  if (a.kind === "Neg" && b.kind === "Neg") return Mul(a.expr, b.expr);
+  if (a.kind === "Neg") return Neg(Mul(a.expr, b));
+  if (b.kind === "Neg") return Neg(Mul(a, b.expr));
+
+  // -1 * x = -x ; x * -1 = -x
+  if (isMinusOne(a)) return Neg(b);
+  if (isMinusOne(b)) return Neg(a);
+
+  // константы
   if (a.kind === "Int" && b.kind === "Int") return { kind: "Int", value: a.value * b.value };
+
   return { kind: "Mul", left: a, right: b };
 }
 
 function Div(a: Expr, b: Expr): Expr {
-  // x / 1 = x
-  if (isOne(b)) return a;
-  // 0 / x = 0 (кроме x = 0, но символически оставим 0)
+  // 0/x = 0 ; x/1 = x
   if (isZero(a)) return zero();
-  if (a.kind === "Int" && b.kind === "Int") {
-    // аккуратный фолдинг только если делится нацело
-    if (b.value !== 0 && a.value % b.value === 0) {
-      return { kind: "Int", value: Math.trunc(a.value / b.value) };
-    }
+  if (isOne(b))  return a;
+
+  // знаки: (-a)/(-b) = a/b ; (-a)/b = -(a/b) ; a/(-b) = -(a/b)
+  if (a.kind === "Neg" && b.kind === "Neg") return Div(a.expr, b.expr);
+  if (a.kind === "Neg") return Neg(Div(a.expr, b));
+  if (b.kind === "Neg") return Neg(Div(a, b.expr));
+
+  // -1 / x = -(1/x) ; x / -1 = -x
+  if (isMinusOne(a)) return Neg(Div(one(), b));
+  if (isMinusOne(b)) return Neg(a);
+
+  //  x/x = 1  (симв. тождество; как и всегда, вне точки x=0)
+  if (eq(a, b)) return one();
+
+  // аккуратный фолдинг для целых
+  if (a.kind === "Int" && b.kind === "Int" && b.value !== 0 && a.value % b.value === 0) {
+    return { kind: "Int", value: Math.trunc(a.value / b.value) };
   }
   return { kind: "Div", left: a, right: b };
 }
@@ -133,6 +179,6 @@ export function derive(e: Expr, varName: string): Expr {
     }
   };
 
-  // Один прогон упрощений поверх результата
+  
   return simplify(d(e));
 }
