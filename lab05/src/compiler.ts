@@ -55,7 +55,7 @@ function wasm(e: Expr, args: string[]): Op<I32> {
       return get_local(i32, idx);
     }
 
-    case "Neg":
+    case "Neg": 
       return i32.sub(i32.const(0), wasm(e.expr, args));
 
     case "Add":

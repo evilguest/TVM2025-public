@@ -43,8 +43,7 @@ function emit(
       // скобки нужны только если внутренний узел слабее унарного
       const inner = emit(e.expr, Prec.Neg, "Neg", 1);
       const s = `-${inner}`;
-      // ставить скобки вокруг всего унарного узла почти никогда не надо,
-      // решает общий критерий ниже
+      
       const needOuter =
         p < parentPrec ||
         (side === 1 && p === parentPrec && (parentKind === "Sub" || parentKind === "Div"));
