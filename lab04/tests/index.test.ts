@@ -41,6 +41,8 @@ describe('Testing unary negation', () => {
     test("Unary minus is supported in subtraction", 3, parseAndPrint, "43 - -1", "43--1");
     test("Unary minus in subtraction is properly parenthesized 1", 4, parseAndPrint, "43 - -1", "(43)--(1)");
     test("Unary minus in subtraction is properly parenthesized 2", 4, parseAndPrint, "43 - -1", "(43)-(-1)");
+    test("Unary minus in subtraction is properly parenthesized 3", 4, parseAndPrint, "41 - -1", "(41)-(-(-(-1)))");
+    test("Unary minus in subtraction is properly parenthesized 4", 4, parseAndPrint, "43 - (-1 + 2)", "(43)-(-(-(-1 + 2)))");
 });
 describe('testing variables', () => {
     test("variables can be used", 3, parseAndPrint, "x + 1", "x+1");
