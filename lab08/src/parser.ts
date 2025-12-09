@@ -7,9 +7,7 @@ import grammar, { FunnyActionDict, FunnySemantics } from './funny.ohm-bundle';
 
 import { MatchResult, Semantics } from 'ohm-js';
 import * as arith from '../../lab04';
-// ============================
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// ============================
+
 
 function collectList<T>(node: any): T[] {
     return node.asIteration().children.map((c: any) => c.parse() as T);
@@ -74,9 +72,7 @@ function ensureDeclared(
     }
 }
 
-// ============================
-// СЕМАНТИЧЕСКИЕ ПРОВЕРКИ
-// ============================
+
 
 export function checkModule(mod: ast.Module): void {
     const funEnv: FunEnv = Object.create(null);
@@ -228,7 +224,7 @@ function checkFuncCall(
     return fn.returns.length;
 }
 
-// различаем арифметический Expr (из lab04) и расширенные узлы
+// различаем арифметический Expr и расширенные узлы
 function isFuncCallExpr(e: ast.Expr): e is ast.FuncCallExpr {
     return (e as any).type === 'funccall';
 }
@@ -239,7 +235,7 @@ function isArrAccessExpr(e: ast.Expr): e is ast.ArrAccessExpr {
 
 // проверка выражений: возвращает, сколько значений оно даёт (1 или >1)
 function checkExpr(e: ast.Expr, env: VarEnv, funEnv: FunEnv): number {
-    // наши расширенные выражения
+   
     if (isFuncCallExpr(e)) {
         return checkFuncCall(e, env, funEnv);
     }
@@ -376,15 +372,12 @@ function makeComparisonNode(
     };
 }
 
-// ============================
-// AST-построение из Ohm
-// ============================
 
 export const getFunnyAst: FunnyActionDict<any> = {
-    // арифметические выражения из lab04
+    
     ...(getExprAst as any),
 
-    // ---------- корень ----------
+    
     Module(funcs: any) {
         const functions = funcs.children.map(
             (f: any) => f.parse() as ast.FunctionDef
@@ -601,7 +594,7 @@ export const getFunnyAst: FunnyActionDict<any> = {
     },
 
     AtomCond_cmp(comp: any) {
-        // Comparison уже вернёт ComparisonCond
+        // Comparison  вернёт ComparisonCond
         return comp.parse() as ast.ComparisonCond;
     },
 
@@ -616,7 +609,6 @@ export const getFunnyAst: FunnyActionDict<any> = {
 
     // AtomCond ... | ParenCond -- paren
     AtomCond_paren(parenNode: any) {
-        // просто пробрасываем результат ParenCond
         return parenNode.parse() as ast.ParenCond;
     },
 
@@ -637,9 +629,7 @@ interface FunnyActionsExt {
     parse(): ast.Module;
 }
 
-// ============================
-// parseFunny
-// ============================
+
 
 export function parseFunny(source: string): ast.Module {
     const match: MatchResult = grammar.Funny.match(source, 'Module');

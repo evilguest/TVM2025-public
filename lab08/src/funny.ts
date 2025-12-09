@@ -101,7 +101,7 @@ export interface ExprStmt {
 
 
 export type Expr =
-    | arith.Expr        // арифметические выражения из lab04
+    | arith.Expr        
     | FuncCallExpr
     | ArrAccessExpr;
 

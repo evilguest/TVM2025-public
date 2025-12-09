@@ -1,28 +1,41 @@
 import { Expr } from "../../lab04";
 import { cost } from "./cost";
 
-
+/** ====== DEBUG ====== */
+const DBG = !!process.env.DEBUG_SIMPLIFY;
+function trace(...args: any[]) {
+  if (!DBG) return;
+  try {
+    process.stderr.write(args.map(String).join(" ") + "\n");
+  } catch {
+    // best-effort
+  }
+}
+/** ==================== */
 
 export function simplify(e: Expr, identities: [Expr, Expr][]): Expr {
-  
+  // Вернули двусторонние правила (как было), но дальше мусор схлопывает normalize
   const ext: [Expr, Expr][] = [];
   const seenPairs = new Set<string>();
   for (const [l, r] of identities) {
     for (const [a, b] of [[l, r], [r, l]] as [Expr, Expr][]) {
-      const k = stringifyExpr(a) + "\u0001" + stringifyExpr(b);
+      const k = keyOf(a) + "\u0001" + keyOf(b);
       if (!seenPairs.has(k)) { seenPairs.add(k); ext.push([a, b]); }
     }
   }
+  trace("[INIT] identities:", identities.length, "expanded:", ext.length);
 
-  // Best-first поиск с ограничением на временное удорожание
   const START = normalize(constantFold(e));
   const startCost = cost(START);
+  trace("[START]", keyOf(START), "cost=", startCost);
 
-  const COST_INCREASE_LIMIT = 5;     
-  const MAX_NODES = 20_000;         
+  // Ослабленные лимиты, чтобы не отсекать полезные шаги
+  const COST_INCREASE_LIMIT = 1000; // глобально от bestCost
+  const LOCAL_CAP = 9;              // локально от curCost
+  const MAX_NODES = 20000;
 
   type Node = { expr: Expr; c: number };
-  // примитивная «очередь с приоритетом» на массивах 
+
   const pq: Node[] = [{ expr: START, c: startCost }];
   const visited = new Set<string>([keyOf(START)]);
 
@@ -31,43 +44,72 @@ export function simplify(e: Expr, identities: [Expr, Expr][]): Expr {
   let expanded = 0;
 
   while (pq.length) {
-    // достаем минимальный по стоимости
     pq.sort((a, b) => a.c - b.c);
     const cur = pq.shift()!;
     const curCost = cur.c;
+    trace("[POP]  cost=", curCost, "pq.size=", pq.length, "expanded=", expanded, "expr=", keyOf(cur.expr));
 
     if (curCost < bestCost) {
       best = cur.expr;
       bestCost = curCost;
+      trace("[BEST] newBestCost=", bestCost, "expr=", keyOf(best));
     }
 
-    if (++expanded > MAX_NODES) break;
+    expanded++;
+    if (expanded > MAX_NODES) {
+      trace("[STOP] Reached MAX_NODES:", MAX_NODES);
+      break;
+    }
 
     // генерим соседей (все применения тождеств на всех поддеревьях)
     const rawNext = findAllApplications(cur.expr, ext);
 
-    // дедуп в рамках шага
-    const stepSeen = new Set<string>();
+    // дедуп до normalize/constantFold
+    const uniqKeys = new Set<string>();
+    const next: Expr[] = [];
     for (const n of rawNext) {
+      const kRaw = stringifyExpr(n);
+      if (!uniqKeys.has(kRaw)) { uniqKeys.add(kRaw); next.push(n); }
+    }
+    trace("[GEN]  rawNext=", rawNext.length, "uniq=", next.length);
+
+    const stepSeen = new Set<string>();
+    for (const n of next) {
       const nf = normalize(constantFold(n));
       const nc = cost(nf);
 
-      // ограничиваем временное удорожание
-      if (nc > bestCost + COST_INCREASE_LIMIT) continue;
+      // локальный кап относительно текущего состояния
+      if (nc > curCost + LOCAL_CAP) {
+        trace("[SKIP] localCap: nc=", nc, ">", "curCost+cap=", curCost + LOCAL_CAP, "expr=", keyOf(nf));
+        continue;
+      }
+
+      // глобальный кап относительно лучшего найденного
+      if (nc > bestCost + COST_INCREASE_LIMIT) {
+        trace("[SKIP] costCap: nc=", nc, ">", "bestCost+CAP=", bestCost + COST_INCREASE_LIMIT, "expr=", keyOf(nf));
+        continue;
+      }
 
       const k = keyOf(nf);
-      if (visited.has(k) || stepSeen.has(k)) continue;
+      if (visited.has(k)) {
+        trace("[SKIP] visited dup:", k);
+        continue;
+      }
+      if (stepSeen.has(k)) {
+        trace("[SKIP] step dup:", k);
+        continue;
+      }
 
       stepSeen.add(k);
       visited.add(k);
       pq.push({ expr: nf, c: nc });
+      trace("[PUSH] cost=", nc, "pq.size=", pq.length, "expr=", k);
     }
   }
 
+  trace("[RESULT] bestCost=", bestCost, "expr=", keyOf(best));
   return best;
 }
-
-
 
 function constantFold(e: Expr): Expr {
   switch (e.kind) {
@@ -104,35 +146,79 @@ function constantFold(e: Expr): Expr {
   }
 }
 
-
-
+/** Усиленная нормализация — агрессивно схлопывает мусор */
 function normalize(e: Expr): Expr {
   switch (e.kind) {
     case "Int":
     case "Ident":
       return e;
 
-    case "Neg":
-      return { kind: "Neg", expr: normalize(e.expr) };
+    case "Neg": {
+      const x = normalize(e.expr);
+      // --x => x
+      if (x.kind === "Neg") return x.expr;
+      // -(0) => 0
+      if (x.kind === "Int" && x.value === 0) return { kind: "Int", value: 0 };
+      return { kind: "Neg", expr: x };
+    }
 
     case "Add": {
       const terms = flatten("Add", e).map(normalize);
-      terms.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
-      return buildAssoc("Add", terms);
+
+      // убрать нули
+      const filtered = terms.filter(t => !(t.kind === "Int" && t.value === 0));
+
+      if (filtered.length === 0) return { kind: "Int", value: 0 };
+
+      // канонический порядок
+      filtered.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
+
+      return buildAssoc("Add", filtered);
     }
 
     case "Mul": {
       const factors = flatten("Mul", e).map(normalize);
-      factors.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
-      return buildAssoc("Mul", factors);
+
+      // 0 «пожирает» всё
+      if (factors.some(f => f.kind === "Int" && f.value === 0)) {
+        return { kind: "Int", value: 0 };
+      }
+
+      // убрать множители-единицы
+      const filtered = factors.filter(f => !(f.kind === "Int" && f.value === 1));
+
+      if (filtered.length === 0) return { kind: "Int", value: 1 };
+
+      filtered.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
+
+      return buildAssoc("Mul", filtered);
     }
 
-    case "Sub":
-      
-      return { kind: "Sub", left: normalize(e.left), right: normalize(e.right) };
+    case "Sub": {
+      const L = normalize(e.left);
+      const R = normalize(e.right);
 
-    case "Div":
-      return { kind: "Div", left: normalize(e.left), right: normalize(e.right) };
+      // x - 0 => x
+      if (R.kind === "Int" && R.value === 0) return L;
+      // 0 - x => -(x)
+      if (L.kind === "Int" && L.value === 0) return normalize({ kind: "Neg", expr: R });
+      // x - x => 0
+      if (areExprsEqual(L, R)) return { kind: "Int", value: 0 };
+
+      return { kind: "Sub", left: L, right: R };
+    }
+
+    case "Div": {
+      const L = normalize(e.left);
+      const R = normalize(e.right);
+
+      // 0 / x => 0  (x != 0)
+      if (L.kind === "Int" && L.value === 0) return { kind: "Int", value: 0 };
+      // x / 1 => x
+      if (R.kind === "Int" && R.value === 1) return L;
+
+      return { kind: "Div", left: L, right: R };
+    }
   }
 }
 
@@ -147,8 +233,6 @@ function buildAssoc(kind: "Add" | "Mul", arr: Expr[]): Expr {
   const mid = arr.length >> 1;
   return { kind, left: buildAssoc(kind, arr.slice(0, mid)), right: buildAssoc(kind, arr.slice(mid)) } as any;
 }
-
-
 
 function findAllApplications(e: Expr, identities: [Expr, Expr][]): Expr[] {
   const out: Expr[] = [];
@@ -234,8 +318,6 @@ function substitute(expr: Expr, mapping: Map<string, Expr>): Expr {
   }
 }
 
-
-
 function areExprsEqual(a: Expr, b: Expr): boolean {
   return keyOf(a) === keyOf(b);
 }
@@ -254,6 +336,5 @@ function stringifyExpr(e: Expr): string {
 }
 
 function keyOf(e: Expr): string {
-  
   return stringifyExpr(normalize(e));
 }
