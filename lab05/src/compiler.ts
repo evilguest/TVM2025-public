@@ -1,5 +1,5 @@
-import { c as C, Op, I32 } from "../../wasm";
-import { Expr } from "../../lab04";
+import { c as C, Op, I32 } from "@tvm/wasm";
+import { Expr } from "@tvm/lab04";
 import { buildOneFunctionModule, Fn } from "./emitHelper";
 const { i32, get_local} = C;
     

@@ -1,5 +1,5 @@
-import { SyntaxError } from "../../lab03";
-import { test } from "../../mark";
+import { SyntaxError } from "@tvm/lab03";
+import { test } from "@tvm/mark";
 import { parseCompileAndExecute } from "../src";
 
 describe('testing addition and multiplication regression', () => {

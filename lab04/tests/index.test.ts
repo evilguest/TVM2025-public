@@ -25,10 +25,14 @@ describe('Testing subtraction and division', () => {
     test("Subtraction is supported", 3, parseAndPrint, "42 - 21", "42-21");
     test("Subtraction is left-associative", 4, parseAndPrint, "10 - 4 - 1", "10-4-1");
     test("Associativity is preserved across addition and subtraction", 4, parseAndPrint, "5 - 2 - 4", "5-2-4");
-    test("Associativity can be overriden via parentheses", 4, parseAndPrint, "5 + 2 - (4 + 3) - 1", "(5+2)-(4+3)-1");
+    test("Associativity can be overriden via parentheses 1", 4, parseAndPrint, "5 + 2 - (4 + 3) - 1", "(5+2)-(4+3)-1");
+    test("Associativity can be overriden via parentheses 2", 4, parseAndPrint, "5 - (4 - 3)", "5-(4-3)");
+    test("Extra parenthesis are removed in subtraction", 4, parseAndPrint, "8 - (4 + 2)", "8-(((4+2)))");
     test("Division is supported", 3, parseAndPrint, "42 / 21", "42/21");
     test("Division is left-associative", 4, parseAndPrint, "8 / 4 / 2", "8/4/2");
-    test("Division associativity can be overriden", 4, parseAndPrint, "8 / (4 / 2)", "8/(4/2)");
+    test("Division associativity can be overriden 1", 4, parseAndPrint, "8 / (4 / 2)", "8/(4/2)");
+    test("Division associativity can be overriden 2", 4, parseAndPrint, "8 / (4 * 2)", "8/(4*2)");
+    test("Extra parenthesis are removed", 4, parseAndPrint, "8 / (4 / 2)", "8/(((4/2)))");
 });
 describe('Testing unary negation', () => {
     test("Unary minus is supported in addition", 3, parseAndPrint, "43 + -1", "43+-1");

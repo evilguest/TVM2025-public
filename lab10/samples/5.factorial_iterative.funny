@@ -1,12 +1,12 @@
 factorial(n: int) 
 requires n >= 0
 returns f: int
-ensures true // how do we specify the factorial 
+ensures (n == 0 and f == 1) or (f == n * factorial(n-1))
 uses i: int
 {
     f = 1;
     i = 1;
-    while(i <= n) invariant (f == i * factorial(i-1))
+    while(i <= n) invariant (f == factorial(i-1))
     {
         f = f * i;
         i = i + 1;

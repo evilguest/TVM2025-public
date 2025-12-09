@@ -1,17 +1,17 @@
-sqrt(n: int) 
-    requires n >= 0
-    returns r: int
-    ensures r*r <= n and (r+1)*(r+1) > n
+sqrt(z: int) 
+    requires z >= 1
+    returns x: int
+    ensures square(x) <= z and square(x+1) > z
     uses y: int
 {
-    r = 0;
-    y = 0;
-    while(y < n) invariant((r+1)*(r+1) <= n)
+    x = 1;
+    y = 1;
+    while(y <= z) invariant(y==x*x and square(x-1) <= z)
     {
-        y = y + 2*r + 1;
-        r = r + 1;
+        y = y + 2*x + 1;
+        x = x + 1;
     }
-    r = r - 1;
+    x = x - 1;
 }
 
 square(x: int) 

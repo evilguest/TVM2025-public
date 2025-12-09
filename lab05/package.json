@@ -25,7 +25,8 @@
   "dependencies": {
     "ohm-js": "17.1.0",
     "@tvm/wasm": "workspace:*",
-    "@tvm/lab04": "workspace:1.0.0"
+    "@tvm/lab03": "workspace:*",
+    "@tvm/lab04": "workspace:*"
   },
   "jest": {}
 }

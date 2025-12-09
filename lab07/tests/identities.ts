@@ -32,4 +32,5 @@ const distributiveIdentities = () => parseIdentities([
 ]);
 const regroupIdentities = () => parseIdentities([
     ["a+(b+c)", "b+(c+a)"],
+    ["a+(b-c)", "b+(-c+a)"],
 ]);

@@ -224,6 +224,8 @@ expr =
   | "(" expr ")";
 ```
 
+The operation prioriries do follow the common convention: multiplicative operations (`*`, `/`) are of a higher priority than the additive ones (`+`, `-`); the unary `-` operation takes the highest precedence. All the binary operations are considered to be left-associative (calculated left-to-right).
+
 ### Function Call
 
 The function call expression uses the positional arguments:
@@ -232,6 +234,8 @@ The function call expression uses the positional arguments:
 functionCall = identifier       (* function name *)
     "(" [ expr {"," expr} ] ")" (* function arguments *)
 ```
+
+The function arguments are evaluated left-to-right.
 
 **Note** that only a single-return functions can be used in expressions; the function returning multiple results can either be called from the external code, or in the [tuple assignment](#assignment-statement).
 
@@ -280,6 +284,9 @@ comparison =
   | expr "<" expr;
 
 ```
+
+The boolean operation prioriries do follow the common convention: negations is evaluated first, then conjunction, then disjunction, then implication. Conjunction and disjunction are considered to be left-associative, implication is right-associative!
+I.e. `a -> b -> c` is parsed as `a -> (b -> c)`, *not* as `(a -> b) -> c`.
 
 ## Predicates
 
