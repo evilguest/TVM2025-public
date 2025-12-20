@@ -182,7 +182,7 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
 
       // ✅ sqrt: unknown считаем успехом (sat — никогда не успех)
       const verified =
-      proof.result === "unsat" || (proof.result === "unknown" && func.name === "sqrt");
+      proof.result === "unsat";
 
       results.push({
       function: func.name,
