@@ -425,27 +425,7 @@ async function proveTheoremWithRetry(
   theorem: Bool,
   solver: any
 ): Promise<{ result: "sat" | "unsat" | "unknown"; model?: Model }> {
-  let r = await proveTheorem(theorem, solver);
-  if (r.result !== "unknown") return r;
-
-  const s2 = new z3.Solver();
-  try {
-    s2.set("timeout", 30000);
-    s2.set("smt.arith.solver", 6);
-    s2.set("smt.arith.nl", true);
-    s2.set("smt.arith.nl.grobner", true);
-    s2.set("smt.arith.nl.rounds", 12);
-    s2.set("smt.mbqi", true);
-  } catch {
-    // ignore
-  }
-
-  s2.add(z3.Not(theorem));
-  const check2 = await s2.check();
-
-  if (check2 === "sat") return { result: "sat", model: s2.model() };
-  if (check2 === "unsat") return { result: "unsat" };
-  return { result: "unknown" };
+  return await proveTheorem(theorem, solver);
 }
 
 async function proveTheorem(
