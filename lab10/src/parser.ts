@@ -1,7 +1,6 @@
 // lab10/src/parser.ts
 
 import { MatchResult, Semantics } from 'ohm-js';
-
 import grammar, { FunnierActionDict } from './funnier.ohm-bundle';
 
 import {
@@ -28,8 +27,42 @@ import {
   Condition,
   ErrorCode,
   FunnyError,
+  SourceLoc,
   getFunnyAst,
 } from '../../lab08';
+
+// ----------------- loc helpers -----------------
+
+let currentOrigin: string | undefined;
+
+function intervalToLoc(interval: any): SourceLoc {
+  const src = interval?.source;
+  const startIdx = interval?.startIdx ?? 0;
+  const endIdx = interval?.endIdx ?? startIdx;
+
+  const start =
+    typeof src?.getLineAndColumn === 'function'
+      ? src.getLineAndColumn(startIdx)
+      : { lineNum: 1, colNum: 1 };
+
+  const end =
+    typeof src?.getLineAndColumn === 'function'
+      ? src.getLineAndColumn(endIdx)
+      : { lineNum: start.lineNum, colNum: start.colNum };
+
+  return {
+    file: currentOrigin,
+    startLine: start.lineNum,
+    startCol: start.colNum,
+    endLine: end.lineNum,
+    endCol: end.colNum,
+  };
+}
+
+function attachLoc<T extends object>(node: T, loc: SourceLoc): T {
+  (node as any).loc = loc;
+  return node;
+}
 
 // ----------------- утилиты -----------------
 
@@ -40,14 +73,15 @@ function collectList<T>(node: any): T[] {
 function foldLogicalChain<T>(
   first: any,
   rest: any,
-  makeNode: (left: T, right: T) => T
+  makeNode: (left: T, right: T, loc: SourceLoc) => T
 ): T {
   let node = first.parse() as T;
-  const restChildren =
-    rest.children ?? rest.asIteration?.().children ?? [];
+  const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
   for (const r of restChildren) {
     const rhs = r.parse() as T;
-    node = makeNode(node, rhs);
+    // loc берём с текущей позиции цепочки
+    const loc = intervalToLoc(r.source ?? r._node?.source ?? r);
+    node = makeNode(node, rhs, loc);
   }
   return node;
 }
@@ -55,15 +89,13 @@ function foldLogicalChain<T>(
 function repeatPrefix<T>(
   nots: any,
   base: any,
-  makeNode: (inner: T) => T
+  makeNode: (inner: T, loc: SourceLoc) => T,
+  locForAll: SourceLoc
 ): T {
   let node = base.parse() as T;
-  const count =
-    nots.children?.length ??
-    nots.asIteration?.().children.length ??
-    0;
+  const count = nots.children?.length ?? nots.asIteration?.().children.length ?? 0;
   for (let i = 0; i < count; i++) {
-    node = makeNode(node);
+    node = makeNode(node, locForAll);
   }
   return node;
 }
@@ -71,60 +103,42 @@ function repeatPrefix<T>(
 // ----------------- семантика -----------------
 
 const getFunnierAst = {
-  // всё, что не связано с верификацией, переиспользуем из lab08
   ...(getFunnyAst as any),
 
   // ---------- модуль: функции + формулы ----------
 
-  // Module := Item+
   Module(items: any) {
-  const functions: AnnotatedFunction[] = [];
-  const formulas: FormulaDef[] = [];
+    const loc = intervalToLoc(this.source);
 
-  // items.children содержит последовательность Function и Formula узлов
-  for (const it of items.children) {
-    const node = it.parse();
-    
-    // Проверяем тип узла по наличию определенных свойств
-    if (node.type === 'formula') {
-      // Это FormulaDef
-      formulas.push(node as FormulaDef);
-    } else {
-      // Это AnnotatedFunction
-      functions.push(node as AnnotatedFunction);
+    const functions: AnnotatedFunction[] = [];
+    const formulas: FormulaDef[] = [];
+
+    for (const it of items.children) {
+      const node = it.parse();
+      if (node?.type === 'formula') formulas.push(node as FormulaDef);
+      else functions.push(node as AnnotatedFunction);
     }
-  }
 
-  const mod: AnnotatedModule = {
-    type: 'module',
-    functions,
-    formulas,
-  };
-
-  return mod;
-},
+    return {
+      type: 'module',
+      functions,
+      formulas,
+      loc,
+    } as AnnotatedModule;
+  },
 
   // ---------- возвращаемые значения / void ----------
 
-  // RetOrVoid = RetSpec -- retSpec | "returns" "void" -- void
   RetOrVoid_retSpec(rs: any) {
     return rs.parse() as ParameterDef[];
   },
 
   RetOrVoid_void(_returnsTok: any, _voidTok: any) {
-    // void-функция: список возвращаемых пустой
     return [] as ParameterDef[];
   },
 
   // ---------- функция с requires / ensures ----------
 
-  // Function :=
-  //   Ident "(" ParamList ")"
-  //     RequiresSpec?
-  //     RetOrVoid
-  //     EnsuresSpec?
-  //     UsesSpec?
-  //     Stmt
   Function(
     name: any,
     _lp: any,
@@ -136,9 +150,11 @@ const getFunnierAst = {
     usesOpt: any,
     stmt: any
   ) {
+    const loc = intervalToLoc(this.source);
+
     const nameStr = name.sourceString;
     const parameters = paramsNode.parse() as ParameterDef[];
-    const returns = retOrVoid.parse() as ParameterDef[];   // [] если void
+    const returns = retOrVoid.parse() as ParameterDef[];
     const locals =
       usesOpt.children.length > 0
         ? (usesOpt.child(0).parse() as ParameterDef[])
@@ -146,17 +162,17 @@ const getFunnierAst = {
 
     const requires =
       requiresOpt.children.length > 0
-        ? (requiresOpt.child(0).parse() as Predicate)
+        ? attachLoc(requiresOpt.child(0).parse() as Predicate, intervalToLoc(requiresOpt.source ?? requiresOpt))
         : undefined;
 
     const ensures =
       ensuresOpt.children.length > 0
-        ? (ensuresOpt.child(0).parse() as Predicate)
+        ? attachLoc(ensuresOpt.child(0).parse() as Predicate, intervalToLoc(ensuresOpt.source ?? ensuresOpt))
         : undefined;
 
     const body = stmt.parse() as Statement;
 
-    const fn: AnnotatedFunction = {
+    return {
       type: 'fun',
       name: nameStr,
       parameters,
@@ -165,47 +181,49 @@ const getFunnierAst = {
       body,
       requires,
       ensures,
-    };
-
-    return fn;
+      loc,
+    } as AnnotatedFunction;
   },
 
   RequiresSpec(_requires: any, pred: any) {
-    return pred.parse() as Predicate;
+    const loc = intervalToLoc(this.source);
+    return attachLoc(pred.parse() as Predicate, loc);
   },
 
   EnsuresSpec(_ensures: any, pred: any) {
-    return pred.parse() as Predicate;
+    const loc = intervalToLoc(this.source);
+    return attachLoc(pred.parse() as Predicate, loc);
   },
 
   // ---------- while с инвариантом ----------
 
-  // While := "while" "(" Condition ")" InvariantSpec? Stmt
   While(_while: any, _lp: any, cond: any, _rp: any, invOpt: any, body: any) {
+    const loc = intervalToLoc(this.source);
+
     const condition = cond.parse() as Condition;
     const invariant =
       invOpt.children.length > 0
-        ? (invOpt.child(0).parse() as Predicate)
+        ? attachLoc(invOpt.child(0).parse() as Predicate, intervalToLoc(invOpt.source ?? invOpt))
         : undefined;
+
     const bodyStmt = body.parse() as Statement;
 
-    const ws: AnnotatedWhileStmt = {
+    return {
       type: 'while',
       condition,
       body: bodyStmt,
       invariant,
-    };
-
-    return ws;
+      loc,
+    } as AnnotatedWhileStmt;
   },
 
   InvariantSpec(_inv: any, pred: any) {
-    return pred.parse() as Predicate;
+    const loc = intervalToLoc(this.source);
+    return attachLoc(pred.parse() as Predicate, loc);
   },
 
   // ---------- формулы ----------
 
-  // Formula = "formula" Ident "(" ParamList ")" "=>" Predicate ";"
   Formula(
     name: any,
     _lp: any,
@@ -215,53 +233,58 @@ const getFunnierAst = {
     bodyPred: any,
     _semi: any
   ) {
-    const nameStr = name.sourceString;
-    const params = paramsNode.parse() as ParameterDef[];
-    const body = bodyPred.parse() as Predicate;
+    const loc = intervalToLoc(this.source);
 
-    const f: FormulaDef = {
+    return {
       type: 'formula',
-      name: nameStr,
-      parameters: params,
-      body,
-    };
-    return f;
+      name: name.sourceString,
+      parameters: paramsNode.parse() as ParameterDef[],
+      body: bodyPred.parse() as Predicate,
+      loc,
+    } as FormulaDef;
   },
 
   // ---------- предикаты ----------
 
-  // Predicate = OrPred
   Predicate(orNode: any) {
     return orNode.parse() as Predicate;
   },
 
   OrPred(first: any, _ops: any, rest: any) {
-    return foldLogicalChain<Predicate>(
-      first,
-      rest,
-      (left, right) =>
-        ({
-          kind: 'or',
-          left,
-          right,
-        } as OrPredicate)
-    );
+    const loc = intervalToLoc(this.source);
+    // цепочка: A (or/-> B)*
+    let node = first.parse() as Predicate;
+    const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
+    for (const r of restChildren) {
+      const rhs = r.parse() as Predicate;
+      node = {
+        kind: 'or',
+        left: node,
+        right: rhs,
+        loc,
+      } as any as OrPredicate;
+    }
+    return node;
   },
 
   AndPred(first: any, _ops: any, rest: any) {
-    return foldLogicalChain<Predicate>(
-      first,
-      rest,
-      (left, right) =>
-        ({
-          kind: 'and',
-          left,
-          right,
-        } as AndPredicate)
-    );
+    const loc = intervalToLoc(this.source);
+    let node = first.parse() as Predicate;
+    const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
+    for (const r of restChildren) {
+      const rhs = r.parse() as Predicate;
+      node = {
+        kind: 'and',
+        left: node,
+        right: rhs,
+        loc,
+      } as any as AndPredicate;
+    }
+    return node;
   },
 
   NotPred(nots: any, atom: any) {
+    const loc = intervalToLoc(this.source);
     return repeatPrefix<Predicate>(
       nots,
       atom,
@@ -269,28 +292,35 @@ const getFunnierAst = {
         ({
           kind: 'not',
           inner,
-        } as NotPredicate)
+          loc,
+        } as NotPredicate),
+      loc
     );
   },
 
   AtomPred_true(_t: any) {
-    const n: TruePredicate = { kind: 'true' };
+    const loc = intervalToLoc(this.source);
+    const n: TruePredicate = { kind: 'true', loc };
     return n;
   },
 
   AtomPred_false(_f: any) {
-    const n: FalsePredicate = { kind: 'false' };
+    const loc = intervalToLoc(this.source);
+    const n: FalsePredicate = { kind: 'false', loc };
     return n;
   },
 
-  // Comparison из lab08 возвращает узел с полями left/op/right
   AtomPred_cmp(comp: any) {
+    // Comparison из lab08 уже содержит left/op/right (+ loc, если ты добавил туда loc)
+    // но мы всё равно можем сверху прицепить loc от текущего узла AtomPred_cmp
+    const loc = intervalToLoc(this.source);
     const c = comp.parse() as any;
     const n: ComparisonPredicate = {
       kind: 'comparison',
       left: c.left as Expr,
       op: c.op,
       right: c.right as Expr,
+      loc: c.loc ?? loc,
     };
     return n;
   },
@@ -308,14 +338,14 @@ const getFunnierAst = {
   },
 
   ParenPred(_lp: any, inner: any, _rp: any) {
-    const p: ParenPredicate = {
+    const loc = intervalToLoc(this.source);
+    return {
       kind: 'paren',
       inner: inner.parse() as Predicate,
-    };
-    return p;
+      loc,
+    } as ParenPredicate;
   },
 
-  // Quantifier = ("forall" | "exists") "(" Param "|" Predicate ")"
   Quantifier(
     qTok: any,
     _lp: any,
@@ -324,31 +354,26 @@ const getFunnierAst = {
     pred: any,
     _rp: any
   ) {
-    const quantifier = qTok.sourceString as 'forall' | 'exists';
-    const variable = paramNode.parse() as ParameterDef;
-    const body = pred.parse() as Predicate;
-
-    const q: QuantifierPredicate = {
+    const loc = intervalToLoc(this.source);
+    return {
       kind: 'quantifier',
-      quantifier,
-      variable,
-      predicate: body,
-    };
-
-    return q;
+      quantifier: qTok.sourceString as 'forall' | 'exists',
+      variable: paramNode.parse() as ParameterDef,
+      predicate: pred.parse() as Predicate,
+      loc,
+    } as QuantifierPredicate;
   },
 
-  // FormulaRef = Ident "(" ArgList ")"
   FormulaRef(name: any, _lp: any, argsNode: any, _rp: any) {
-    const fr: FormulaRefPredicate = {
+    const loc = intervalToLoc(this.source);
+    return {
       kind: 'formulaRef',
       name: name.sourceString,
       args: argsNode.parse() as Expr[],
-    };
-    return fr;
+      loc,
+    } as FormulaRefPredicate;
   },
 
-  // переопределяем ParamList, чтобы использовать наш collectList
   ParamList(list: any) {
     return collectList<ParameterDef>(list);
   },
@@ -359,7 +384,8 @@ const getFunnierAst = {
 export const semantics: FunnySemanticsExt =
   grammar.Funnier.createSemantics() as FunnySemanticsExt;
 
-semantics.addOperation('parse()', getFunnierAst);
+// ✅ фикс типизации ohm action dict
+semantics.addOperation('parse()', getFunnierAst as any);
 
 export interface FunnySemanticsExt extends Semantics {
   (match: MatchResult): FunnyActionsExt;
@@ -370,6 +396,8 @@ interface FunnyActionsExt {
 }
 
 export function parseFunnier(source: string, origin?: string): AnnotatedModule {
+  currentOrigin = origin;
+
   const match: MatchResult = grammar.Funnier.match(source, 'Module');
 
   if (match.failed()) {
@@ -379,17 +407,14 @@ export function parseFunnier(source: string, origin?: string): AnnotatedModule {
         ? m.getRightmostFailurePosition()
         : null;
 
-    const message: string =
-      m.message ?? 'Syntax error in Funnier module.';
+    const message: string = m.message ?? 'Syntax error in Funnier module.';
 
-    throw new FunnyError(
-      message,
-      ErrorCode.ParseError,
-      pos?.lineNum,
-      pos?.colNum
-    );
+    currentOrigin = undefined;
+    throw new FunnyError(message, ErrorCode.ParseError, pos?.lineNum, pos?.colNum);
   }
 
   const mod = (semantics as FunnySemanticsExt)(match).parse();
+
+  currentOrigin = undefined;
   return mod;
 }

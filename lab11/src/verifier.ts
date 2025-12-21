@@ -1,3 +1,5 @@
+// lab11/src/verifier.ts
+
 import { Arith, Bool, Context, init, Model, SMTArray } from "z3-solver";
 
 import {
@@ -24,6 +26,8 @@ import {
   ArrLValue,
   FuncCallExpr,
   ArrAccessExpr,
+  SourceLoc,
+  FunnyError,
 } from "../../lab08";
 
 // -------------------- helpers: kind/type compatibility --------------------
@@ -32,12 +36,176 @@ function tag(x: any): string | undefined {
   return x?.type ?? x?.kind;
 }
 
+// -------------------- NEW: Verification error code --------------------
+
+const VERIFICATION_FAILED_CODE = "E_VERIFICATION_FAILED";
+
+// -------------------- NEW: location helpers --------------------
+
+function formatLocRange(loc?: SourceLoc): string {
+  if (!loc) return "<unknown>";
+  const file = loc.file ?? "<input>";
+  if (typeof loc.endLine === "number" && typeof loc.endCol === "number") {
+    return `${file}:${loc.startLine}:${loc.startCol}-${loc.endLine}:${loc.endCol}`;
+  }
+  return `${file}:${loc.startLine}:${loc.startCol}`;
+}
+
+function readLocFromAny(obj: any): SourceLoc | undefined {
+  if (!obj) return undefined;
+
+  if (obj.loc && typeof obj.loc === "object") {
+    const l = obj.loc;
+    if (typeof l.startLine === "number" && typeof l.startCol === "number") {
+      return l as SourceLoc;
+    }
+  }
+
+  if (typeof obj.startLine === "number" && typeof obj.startCol === "number") {
+    const loc: SourceLoc = { file: obj.file, startLine: obj.startLine, startCol: obj.startCol };
+    if (typeof obj.endLine === "number" && typeof obj.endCol === "number") {
+      loc.endLine = obj.endLine;
+      loc.endCol = obj.endCol;
+    }
+    return loc;
+  }
+
+  return undefined;
+}
+
+function getLocFromExpr(expr: Expr | any): SourceLoc | undefined {
+  if (!expr) return undefined;
+
+  const direct = readLocFromAny(expr);
+  if (direct) return direct;
+
+  const t = tag(expr);
+
+  // lab08 arithmetic (kind-based)
+  if (expr.kind) {
+    switch (expr.kind) {
+      case "Num":
+      case "Int":
+      case "Var":
+      case "Ident":
+        return direct;
+
+      case "Neg":
+        return getLocFromExpr(expr.expr ?? expr.inner);
+
+      case "Add":
+      case "Sub":
+      case "Mul":
+      case "Div":
+        return getLocFromExpr(expr.left) ?? getLocFromExpr(expr.right) ?? direct;
+
+      default:
+        return direct;
+    }
+  }
+
+  // lab08 extra expressions (type-based)
+  if (t === "funccall") {
+    for (const a of expr.args ?? []) {
+      const r = getLocFromExpr(a);
+      if (r) return r;
+    }
+    return direct;
+  }
+
+  if (t === "arraccess") {
+    return getLocFromExpr(expr.index) ?? direct;
+  }
+
+  return direct;
+}
+
+function getLocFromPredicate(pred: Predicate | any): SourceLoc | undefined {
+  if (!pred) return undefined;
+
+  const direct = readLocFromAny(pred);
+  if (direct) return direct;
+
+  switch (pred.kind) {
+    case "true":
+    case "false":
+      return direct;
+
+    case "comparison": {
+      const c = pred as ComparisonPredicate;
+      return getLocFromExpr(c.left) ?? getLocFromExpr(c.right) ?? direct;
+    }
+
+    case "and": {
+      const p = pred as AndPredicate;
+      return getLocFromPredicate(p.left) ?? getLocFromPredicate(p.right) ?? direct;
+    }
+
+    case "or": {
+      const p = pred as OrPredicate;
+      return getLocFromPredicate(p.left) ?? getLocFromPredicate(p.right) ?? direct;
+    }
+
+    case "not": {
+      // у тебя not = {kind:'not', inner: ...}
+      const p = pred as NotPredicate;
+      const inner = (p as any).inner ?? (p as any).predicate;
+      return getLocFromPredicate(inner) ?? direct;
+    }
+
+    case "paren": {
+      const p = pred as ParenPredicate;
+      return getLocFromPredicate(p.inner) ?? direct;
+    }
+
+    case "implies": {
+      // у тебя implies встречается как any (kind: "implies", left, right)
+      return getLocFromPredicate((pred as any).right) ?? getLocFromPredicate((pred as any).left) ?? direct;
+    }
+
+    case "quantifier": {
+      const q = pred as QuantifierPredicate;
+      return readLocFromAny(q) ?? getLocFromPredicate(q.predicate);
+    }
+
+    case "formulaRef": {
+      const fr = pred as FormulaRefPredicate;
+      // обычно loc лежит прямо на formulaRef, но если нет — берём из аргументов
+      for (const a of fr.args ?? []) {
+        const r = getLocFromExpr(a);
+        if (r) return r;
+      }
+      return direct;
+    }
+
+    default:
+      return direct;
+  }
+}
+
 // -------------------- Z3 init --------------------
 
 let z3Context: Context | null = null;
 let z3: Context;
 
 const recursiveAxiomsAdded = new Set<string>();
+
+
+const recursiveFunDecls = new Map<string, any>();
+
+function getOrCreateRecFun(z3ctx: any, fname: string) {
+  let f = recursiveFunDecls.get(fname);
+  if (f) return f;
+
+  f = (z3ctx as any).Function.declare(
+    `${fname}_rec`,
+    (z3ctx as any).Int.sort(),
+    (z3ctx as any).Int.sort()
+  );
+
+  recursiveFunDecls.set(fname, f);
+  return f;
+}
 
 async function initZ3() {
   if (!z3Context) {
@@ -50,6 +218,7 @@ async function initZ3() {
 export function flushZ3() {
   z3Context = null;
   recursiveAxiomsAdded.clear();
+  recursiveFunDecls.clear(); 
 }
 
 // -------------------- public result type --------------------
@@ -90,7 +259,7 @@ function buildEnvironment(func: AnnotatedFunction, z3: Context): Env {
   return env;
 }
 
-// -------------------- NEW: small arithmetic simplifier (как в “первой версии”) --------------------
+// -------------------- NEW: small arithmetic simplifier --------------------
 
 function isNumLit(e: any): e is { kind: "Num"; value: number } {
   return e && e.kind === "Num" && typeof e.value === "number";
@@ -152,17 +321,20 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
   const results: VerificationResult[] = [];
   let hasFailure = false;
 
+  // NEW: запоминаем первую ошибку + её loc, чтобы кинуть корректный FunnyError в конце
+  let firstFailedFunc: string | null = null;
+  let firstFailedLoc: SourceLoc | undefined;
+
   z3 = await initZ3();
 
   for (const func of module.functions) {
     const solver = new z3.Solver();
 
-    // ✅ NEW: как в “первой версии”
     try {
       solver.set("timeout", 5000);
       solver.set("smt.mbqi", true);
     } catch {
-      // не ломаемся, если set не поддержан
+      // ignore
     }
 
     try {
@@ -180,69 +352,94 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
       const z3VC = convertPredicateToZ3(vc, env, z3, module, solver);
       const proof = await proveTheoremWithRetry(z3VC, solver);
 
-      // ✅ sqrt: unknown считаем успехом (sat — никогда не успех)
-      const verified =
-      proof.result === "unsat";
+      const verified = proof.result === "unsat";
+
+      // NEW: выбираем локацию “где именно сломалось”
+      const vcLoc = getLocFromPredicate(vc);
+      const ensuresLoc = func.ensures ? readLocFromAny(func.ensures) ?? getLocFromPredicate(func.ensures) : undefined;
+      const requiresLoc = func.requires ? readLocFromAny(func.requires) ?? getLocFromPredicate(func.requires) : undefined;
+      const funcLoc = readLocFromAny(func);
+
+      const bestLoc = vcLoc ?? ensuresLoc ?? requiresLoc ?? funcLoc;
 
       results.push({
-      function: func.name,
-      verified,
-      error:
-      verified
-      ? undefined
-      : proof.result === "sat"
-        ? "Теорема неверна: найден контрпример (модель Z3)."
-        : "Z3 вернул unknown.",
-  model: verified ? undefined : proof.model,
-});
+        function: func.name,
+        verified,
+        error:
+          verified
+            ? undefined
+            : proof.result === "sat"
+              ? `Теорема неверна: найден контрпример. Место: ${formatLocRange(bestLoc)}`
+              : `Z3 вернул unknown. Место: ${formatLocRange(bestLoc)}`,
+        model: verified ? undefined : proof.model,
+      });
 
-
-      if (!verified) hasFailure = true;
+      if (!verified) {
+        hasFailure = true;
+        if (!firstFailedFunc) {
+          firstFailedFunc = func.name;
+          firstFailedLoc = bestLoc;
+        }
+      }
     } catch (e: any) {
+      hasFailure = true;
+      if (!firstFailedFunc) {
+        firstFailedFunc = func.name;
+        // если упали исключением — пробуем хотя бы loc функции
+        firstFailedLoc = readLocFromAny(func) ?? undefined;
+      }
+
       results.push({
         function: func.name,
         verified: false,
         error: String(e?.message ?? e),
       });
-      hasFailure = true;
     }
   }
 
   if (hasFailure) {
     const failed = results.filter((r) => !r.verified).map((r) => r.function).join(", ");
-    throw new Error(`Verification failed for: ${failed}`);
+
+    // NEW: кидаем FunnyError с координатами (чтобы тесты могли проверить startLine/startCol/...)
+    if (firstFailedLoc) {
+      throw new FunnyError(
+        `Verification failed for: ${failed}`,
+        VERIFICATION_FAILED_CODE,
+        firstFailedLoc.startLine,
+        firstFailedLoc.startCol,
+        firstFailedLoc.endCol,
+        firstFailedLoc.endLine
+      );
+    }
+
+    // если loc вообще нет — кидаем без координат
+    throw new FunnyError(`Verification failed for: ${failed}`, VERIFICATION_FAILED_CODE);
   }
 
   return results;
 }
 
+// -------------------- prover --------------------
+
 async function proveTheoremWithRetry(
   theorem: Bool,
   solver: any
 ): Promise<{ result: "sat" | "unsat" | "unknown"; model?: Model }> {
-  // Первая попытка — как сейчас
   let r = await proveTheorem(theorem, solver);
   if (r.result !== "unknown") return r;
 
-  // Вторая попытка: новый solver + более сильные параметры для нелинейной арифметики
   const s2 = new z3.Solver();
   try {
-    // больше времени
     s2.set("timeout", 30000);
-
-    // агрессивнее NL-арифметика
     s2.set("smt.arith.solver", 6);
     s2.set("smt.arith.nl", true);
     s2.set("smt.arith.nl.grobner", true);
     s2.set("smt.arith.nl.rounds", 12);
-
-    // часто помогает на инвариантах
     s2.set("smt.mbqi", true);
   } catch {
-    // если какая-то опция не поддерживается — просто игнор
+    // ignore
   }
 
-  // доказываем тот же theorem
   s2.add(z3.Not(theorem));
   const check2 = await s2.check();
 
@@ -250,7 +447,6 @@ async function proveTheoremWithRetry(
   if (check2 === "unsat") return { result: "unsat" };
   return { result: "unknown" };
 }
-
 
 async function proveTheorem(
   theorem: Bool,
@@ -263,7 +459,7 @@ async function proveTheorem(
   return { result: "unknown" };
 }
 
-// -------------------- invariants detection (type/kind safe) --------------------
+// -------------------- invariants detection --------------------
 
 function stmtHasInvariant(stmt: any): boolean {
   if (!stmt) return false;
@@ -285,14 +481,8 @@ function stmtHasWhile(stmt: any): boolean {
   return false;
 }
 
-
 function isOneLiteral(n: any): boolean {
-  return (
-    n &&
-    (n.kind === "Num" || n.kind === "Int") &&
-    typeof n.value === "number" &&
-    n.value === 1
-  );
+  return n && (n.kind === "Num" || n.kind === "Int") && typeof n.value === "number" && n.value === 1;
 }
 
 function isXMinusOneExpr(expr: any): boolean {
@@ -404,7 +594,6 @@ function computeWPWhile(whileStmt: any, post: Predicate, module: AnnotatedModule
     throw new Error("while без invariant (для верификации нужен invariant)");
   }
 
-  // ✅ ТВОЯ починка gcd — оставляем
   if ((invariant as any).kind === "true") {
     return { kind: "true" } as any;
   }
@@ -460,6 +649,11 @@ function computeWPAssignment(assign: AssignStmt, post: Predicate): Predicate {
     }
   }
 
+  // если в assign есть loc — это идеальная точка “где ломается”
+  if ((assign as any).loc && !readLocFromAny(cur)) {
+    (cur as any).loc = (assign as any).loc;
+  }
+
   return cur;
 }
 
@@ -492,49 +686,58 @@ function convertConditionToPredicate(c: Condition): Predicate {
   }
 }
 
-// -------------------- predicate simplifier (boolean) --------------------
+// -------------------- predicate simplifier --------------------
 
 function simplifyPredicate(p: Predicate): Predicate {
+  // сохраняем loc, если он был
+  const origLoc = readLocFromAny(p);
+
+  const keepLoc = (x: Predicate): Predicate => {
+    if (origLoc && !readLocFromAny(x)) (x as any).loc = origLoc;
+    return x;
+  };
+
   switch ((p as any).kind) {
     case "and": {
       const l = simplifyPredicate((p as AndPredicate).left);
       const r = simplifyPredicate((p as AndPredicate).right);
-      if (l.kind === "true") return r;
-      if (r.kind === "true") return l;
-      if (l.kind === "false" || r.kind === "false") return { kind: "false" };
-      return { kind: "and", left: l, right: r } as any;
+      if (l.kind === "true") return keepLoc(r);
+      if (r.kind === "true") return keepLoc(l);
+      if (l.kind === "false" || r.kind === "false") return keepLoc({ kind: "false" } as any);
+      return keepLoc({ kind: "and", left: l, right: r } as any);
     }
     case "or": {
       const l = simplifyPredicate((p as OrPredicate).left);
       const r = simplifyPredicate((p as OrPredicate).right);
-      if (l.kind === "true" || r.kind === "true") return { kind: "true" };
-      if (l.kind === "false") return r;
-      if (r.kind === "false") return l;
-      return { kind: "or", left: l, right: r } as any;
+      if (l.kind === "true" || r.kind === "true") return keepLoc({ kind: "true" } as any);
+      if (l.kind === "false") return keepLoc(r);
+      if (r.kind === "false") return keepLoc(l);
+      return keepLoc({ kind: "or", left: l, right: r } as any);
     }
     case "not": {
-      const inner = simplifyPredicate((p as any).inner ?? (p as any).predicate);
-      if (inner.kind === "true") return { kind: "false" };
-      if (inner.kind === "false") return { kind: "true" };
-      if (inner.kind === "not") return (inner as any).inner ?? (inner as any).predicate;
-      return { kind: "not", inner } as any;
+      const inner0 = (p as any).inner ?? (p as any).predicate;
+      const inner = simplifyPredicate(inner0);
+      if (inner.kind === "true") return keepLoc({ kind: "false" } as any);
+      if (inner.kind === "false") return keepLoc({ kind: "true" } as any);
+      if ((inner as any).kind === "not") return keepLoc(((inner as any).inner ?? (inner as any).predicate) as any);
+      return keepLoc({ kind: "not", inner } as any);
     }
     case "paren":
-      return simplifyPredicate((p as ParenPredicate).inner);
+      return keepLoc(simplifyPredicate((p as ParenPredicate).inner));
     case "implies": {
       const l = simplifyPredicate((p as any).left);
       const r = simplifyPredicate((p as any).right);
-      if (l.kind === "false") return { kind: "true" };
-      if (l.kind === "true") return r;
-      if (r.kind === "true") return { kind: "true" };
-      return { kind: "implies", left: l, right: r } as any;
+      if (l.kind === "false") return keepLoc({ kind: "true" } as any);
+      if (l.kind === "true") return keepLoc(r);
+      if (r.kind === "true") return keepLoc({ kind: "true" } as any);
+      return keepLoc({ kind: "implies", left: l, right: r } as any);
     }
     default:
-      return p;
+      return keepLoc(p);
   }
 }
 
-// -------------------- substitution helpers (unchanged, но exprEquals теперь использует simplifyExpr) --------------------
+// -------------------- substitution helpers --------------------
 
 function exprEquals(a: Expr, b: Expr): boolean {
   const aa: any = simplifyExpr(a as any);
@@ -579,8 +782,6 @@ function exprEquals(a: Expr, b: Expr): boolean {
       return JSON.stringify(aa) === JSON.stringify(bb);
   }
 }
-
-// -------------------- substitution: var / array (оставил как было, но теперь exprToZ3 упрощает вход) --------------------
 
 function substituteVarInPredicate(pred: Predicate, varName: string, subst: Expr): Predicate {
   switch ((pred as any).kind) {
@@ -882,197 +1083,194 @@ function convertFormulaRefToZ3(fr: FormulaRefPredicate, env: Env, z3: Context, m
 
   for (let i = 0; i < f.parameters.length; i++) {
     const p = f.parameters[i];
-    if (p.typeName !== "int") throw new Error(`Formula param must be int, got ${p.name}:${p.typeName}`);
-    const argZ3 = convertExprToZ3(fr.args[i], env, z3, module, solver);
-    env2.set(p.name, argZ3);
+    const a = fr.args[i];
+
+    if (p.typeName === "int") {
+      const az3 = convertExprToZ3(a, env, z3, module, solver);
+      env2.set(p.name, az3);
+    } else if (p.typeName === "int[]") {
+      throw new Error("FormulaRef: int[] params not supported in verifier");
+    }
   }
 
-  return convertPredicateToZ3(f.body as any, env2, z3, module, solver);
+  return convertPredicateToZ3(f.body, env2, z3, module, solver);
 }
 
 // -------------------- Expr -> Z3 --------------------
 
 function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedModule, solver: any): Arith {
-  // ✅ NEW: упрощаем перед переводом в Z3 (как в “первой версии”)
-  expr = simplifyExpr(expr as any) as any;
+  
+  const e: any = simplifyExpr(expr as any);
 
-  const k = (expr as any).kind;
-  const t = tag(expr);
+  const k = e.kind;
+  const t = tag(e);
+
+  if (t === "funccall") {
+    return convertFuncCallExprToZ3(e as any as FuncCallExpr, env, z3, module, solver);
+  }
+
+  if (t === "arraccess") {
+    return convertArrAccessExprToZ3(e as any as ArrAccessExpr, env, z3, module, solver);
+  }
 
   switch (k) {
     case "Num":
     case "Int":
-      return z3.Int.val((expr as any).value);
+      return z3.Int.val(e.value);
 
     case "Var":
     case "Ident": {
-      const name = (expr as any).name;
-      const v = env.get(name);
-      if (!v) throw new Error(`unknown variable '${name}'`);
-      if (!isArith(v)) throw new Error(`'${name}' is an array but used as int`);
+      const v = env.get(e.name);
+      if (!v) throw new Error(`Unknown var ${e.name}`);
+      if (!isArith(v)) throw new Error(`Var ${e.name} is not Arith`);
       return v;
     }
 
     case "Neg":
-      return convertExprToZ3((expr as any).expr ?? (expr as any).inner, env, z3, module, solver).neg();
+      return z3.Int.val(0).sub(convertExprToZ3(e.expr ?? e.inner, env, z3, module, solver));
 
-    case "Add": {
-      const l = convertExprToZ3((expr as any).left, env, z3, module, solver);
-      const r = convertExprToZ3((expr as any).right, env, z3, module, solver);
-      return l.add(r);
-    }
-    case "Sub": {
-      const l = convertExprToZ3((expr as any).left, env, z3, module, solver);
-      const r = convertExprToZ3((expr as any).right, env, z3, module, solver);
-      return l.sub(r);
-    }
-    case "Mul": {
-      const l = convertExprToZ3((expr as any).left, env, z3, module, solver);
-      const r = convertExprToZ3((expr as any).right, env, z3, module, solver);
-      return l.mul(r);
-    }
-    case "Div": {
-      const l = convertExprToZ3((expr as any).left, env, z3, module, solver);
-      const r = convertExprToZ3((expr as any).right, env, z3, module, solver);
-      return l.div(r);
-    }
-  }
-
-  if (t === "arraccess") {
-    const aa = expr as any as ArrAccessExpr;
-    const arr = env.get(aa.name);
-    if (!arr) throw new Error(`unknown array '${aa.name}'`);
-    const idx = convertExprToZ3(aa.index, env, z3, module, solver);
-    return (z3 as any).Select(arr as any, idx) as any;
-  }
-
-  if (t === "funccall") {
-    const fc = expr as any as FuncCallExpr;
-
-    if (fc.name === "length") {
-      if (fc.args.length !== 1) throw new Error("length expects 1 argument");
-      const a0 = fc.args[0] as any;
-      if (a0.kind !== "Var" && a0.kind !== "Ident") throw new Error("length expects array variable argument");
-      const lenName = `len_${a0.name}`;
-      if (!env.has(lenName)) env.set(lenName, z3.Int.const(lenName));
-      return env.get(lenName)! as any;
-    }
-
-    const args = fc.args.map((a) => convertExprToZ3(a, env, z3, module, solver));
-    const argKey = args.map((a) => a.toString()).join("_");
-    const resName = `${fc.name}_result_${argKey}`;
-
-    const cached = env.get(resName);
-    if (cached) {
-      if (!isArith(cached)) throw new Error("internal: cached result is not Arith");
-      return cached;
-    }
-
-    const res = z3.Int.const(resName);
-    env.set(resName, res);
-
-    addFunctionEnsuresAxiom(fc.name, args, res, z3, module, solver);
-    return res;
-  }
-
-  throw new Error(`convertExprToZ3: unknown expr node '${k ?? t ?? "??"}'`);
-}
-
-// -------------------- ensures axiom --------------------
-
-function addFunctionEnsuresAxiom(name: string, args: Arith[], result: Arith, z3: Context, module: AnnotatedModule, solver: any) {
-  const f = module.functions.find((fn) => fn.name === name);
-  if (!f) return;
-  if (!f.ensures) return;
-  if (f.returns.length !== 1) return;
-  if (f.returns[0].typeName !== "int") return;
-
-  if (predicateContainsFunCall(f.ensures, name)) {
-    if (recursiveAxiomsAdded.has(name)) return;
-    recursiveAxiomsAdded.add(name);
-
-    const n = z3.Int.const(`n_${name}_rec`);
-    const resN = z3.Int.const(`${name}_result_${n.toString()}`);
-    const nMinus1 = n.sub(z3.Int.val(1));
-    const resNMinus1 = z3.Int.const(`${name}_result_${nMinus1.toString()}`);
-
-    solver.add(z3.ForAll([n], z3.Implies(n.eq(0), resN.eq(z3.Int.val(1)))));
-    solver.add(z3.ForAll([n], z3.Implies(n.gt(0), resN.eq(n.mul(resNMinus1)))));
-
-    return;
-  }
-
-  const env2: Env = new Map();
-
-  for (let i = 0; i < f.parameters.length; i++) {
-    const p = f.parameters[i];
-    if (p.typeName !== "int") return;
-    if (i >= args.length) return;
-    env2.set(p.name, args[i]);
-  }
-
-  env2.set(f.returns[0].name, result);
-
-  const ax = convertPredicateToZ3(f.ensures, env2, z3, module, solver);
-  solver.add(ax);
-}
-
-function predicateContainsFunCall(p: Predicate, name: string): boolean {
-  switch ((p as any).kind) {
-    case "true":
-    case "false":
-      return false;
-    case "comparison":
-      return exprContainsFunCall((p as any).left, name) || exprContainsFunCall((p as any).right, name);
-    case "and":
-    case "or":
-      return predicateContainsFunCall((p as any).left, name) || predicateContainsFunCall((p as any).right, name);
-    case "not": {
-      const inner = (p as any).inner ?? (p as any).predicate;
-      return predicateContainsFunCall(inner, name);
-    }
-    case "paren":
-      return predicateContainsFunCall((p as any).inner, name);
-    case "quantifier":
-      return predicateContainsFunCall((p as any).predicate, name);
-    case "formulaRef":
-      return (p as any).args.some((a: Expr) => exprContainsFunCall(a, name));
-    case "implies":
-      return predicateContainsFunCall((p as any).left, name) || predicateContainsFunCall((p as any).right, name);
-    default:
-      return false;
-  }
-}
-
-function exprContainsFunCall(e: Expr, name: string): boolean {
-  e = simplifyExpr(e as any) as any;
-
-  const t = tag(e);
-  const k = (e as any).kind;
-
-  if (t === "funccall") {
-    const fc = e as any as FuncCallExpr;
-    if (fc.name === name) return true;
-    return fc.args.some((a: Expr) => exprContainsFunCall(a, name));
-  }
-  if (t === "arraccess") {
-    return exprContainsFunCall((e as any).index, name);
-  }
-
-  switch (k) {
-    case "Num":
-    case "Int":
-    case "Var":
-    case "Ident":
-      return false;
-    case "Neg":
-      return exprContainsFunCall((e as any).expr ?? (e as any).inner, name);
     case "Add":
+      return convertExprToZ3(e.left, env, z3, module, solver).add(convertExprToZ3(e.right, env, z3, module, solver));
     case "Sub":
+      return convertExprToZ3(e.left, env, z3, module, solver).sub(convertExprToZ3(e.right, env, z3, module, solver));
     case "Mul":
+      return convertExprToZ3(e.left, env, z3, module, solver).mul(convertExprToZ3(e.right, env, z3, module, solver));
     case "Div":
-      return exprContainsFunCall((e as any).left, name) || exprContainsFunCall((e as any).right, name);
+      return convertExprToZ3(e.left, env, z3, module, solver).div(convertExprToZ3(e.right, env, z3, module, solver));
+
     default:
-      return false;
+      throw new Error(`convertExprToZ3: unknown expr.kind ${k}`);
   }
+}
+
+function convertArrAccessExprToZ3(acc: ArrAccessExpr, env: Env, z3: Context, module: AnnotatedModule, solver: any): Arith {
+  const arr = env.get(acc.name);
+  if (!arr) throw new Error(`Unknown array ${acc.name}`);
+  const idx = convertExprToZ3(acc.index, env, z3, module, solver);
+
+  // (arr as any).select(idx)
+  const sel = (arr as any).select(idx);
+  return sel;
+}
+
+function predicateContainsFunCall(pred: any, fname: string): boolean {
+  if (!pred) return false;
+
+  if (tag(pred) === "funccall") return pred.name === fname;
+
+  if (pred.kind === "comparison") {
+    return predicateContainsFunCall(pred.left, fname) || predicateContainsFunCall(pred.right, fname);
+  }
+
+  if (pred.kind === "and" || pred.kind === "or") {
+    return predicateContainsFunCall(pred.left, fname) || predicateContainsFunCall(pred.right, fname);
+  }
+
+  if (pred.kind === "not") {
+    const inner = pred.inner ?? pred.predicate;
+    return predicateContainsFunCall(inner, fname);
+  }
+
+  if (pred.kind === "paren") return predicateContainsFunCall(pred.inner, fname);
+  if (pred.kind === "implies") return predicateContainsFunCall(pred.left, fname) || predicateContainsFunCall(pred.right, fname);
+
+  if (pred.kind === "quantifier") return predicateContainsFunCall(pred.predicate, fname);
+  if (pred.kind === "formulaRef") return (pred.args ?? []).some((a: any) => predicateContainsFunCall(a, fname));
+
+  // expr-level
+  if (pred.kind === "Add" || pred.kind === "Sub" || pred.kind === "Mul" || pred.kind === "Div")
+    return predicateContainsFunCall(pred.left, fname) || predicateContainsFunCall(pred.right, fname);
+  if (pred.kind === "Neg") return predicateContainsFunCall(pred.expr ?? pred.inner, fname);
+
+  return false;
+}
+
+function convertFuncCallExprToZ3(
+  call: FuncCallExpr,
+  env: Env,
+  z3: Context,
+  module: AnnotatedModule,
+  solver: any
+): Arith {
+  // built-in length
+  if (call.name === "length") {
+    const a0 = call.args[0];
+    const arr = env.get((a0 as any).name);
+    if (!arr) throw new Error(`Unknown array for length(...)`);
+    const lengthFun = (z3 as any).Function.declare(
+      "length",
+      (z3 as any).Array.sort(z3.Int.sort(), z3.Int.sort()),
+      z3.Int.sort()
+    );
+    return lengthFun.call(arr as any);
+  }
+
+  // ✅ ДЕТЕРМИНИРОВАННЫЙ resName + КЕШ (КРИТИЧНО ДЛЯ factorial)
+  const argsZ3 = call.args.map((a) => convertExprToZ3(a, env, z3, module, solver));
+  const argKey = argsZ3.map((a: any) => a.toString()).join("_");
+  const resName = `${call.name}_result_${argKey}`;
+
+  const cached = env.get(resName);
+  if (cached) {
+    if (!isArith(cached)) throw new Error(`Cached call result ${resName} is not Arith`);
+    return cached;
+  }
+
+  const res = z3.Int.const(resName);
+  env.set(resName, res);
+
+  addEnsuresAxiomForCall(call.name, argsZ3, res, module, z3, solver);
+
+  return res;
+}
+
+function addEnsuresAxiomForCall(
+  fname: string,
+  argsZ3: any[],
+  resZ3: any,
+  module: AnnotatedModule,
+  z3: Context,
+  solver: any
+) {
+  const fn = module.functions.find((f) => f.name === fname);
+  if (!fn) return;
+  if (!fn.returns || fn.returns.length !== 1) return;
+  if (fn.returns[0].typeName !== "int") return;
+
+  if (fn.ensures && predicateContainsFunCall(fn.ensures as any, fname)) {
+    if (recursiveAxiomsAdded.has(fname)) return;
+    recursiveAxiomsAdded.add(fname);
+
+    const n = z3.Int.const(`n_${fname}_rec`);
+
+    const resN = z3.Int.const(`${fname}_result_${n.toString()}`);
+    const nMinus1 = n.sub(z3.Int.val(1));
+    const resNMinus1 = z3.Int.const(`${fname}_result_${nMinus1.toString()}`);
+
+    solver.add(
+      z3.ForAll([n] as any, z3.Implies(n.eq(z3.Int.val(0)), resN.eq(z3.Int.val(1))))
+    );
+    solver.add(
+      z3.ForAll([n] as any, z3.Implies(n.gt(z3.Int.val(0)), resN.eq(n.mul(resNMinus1))))
+    );
+  }
+
+  // локальная подстановка параметров/результата в requires/ensures
+  const localEnv: Env = new Map(envFromArgs(fn, argsZ3, resZ3, z3));
+  if (fn.requires) solver.add(convertPredicateToZ3(fn.requires, localEnv, z3, module, solver));
+  if (fn.ensures) solver.add(convertPredicateToZ3(fn.ensures, localEnv, z3, module, solver));
+}
+
+function envFromArgs(fn: AnnotatedFunction, argsZ3: any[], resZ3: any, z3: Context): Env {
+  const env: Env = new Map();
+
+  for (let i = 0; i < fn.parameters.length; i++) {
+    const p = fn.parameters[i];
+    if (p.typeName === "int") env.set(p.name, argsZ3[i]);
+  }
+
+  const ret = fn.returns[0];
+  env.set(ret.name, resZ3);
+
+  return env;
 }

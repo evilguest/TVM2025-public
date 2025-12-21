@@ -7,6 +7,7 @@ import type {
   ParameterDef,
   Expr,
   ComparisonCond,
+  SourceLoc, // <-- ВАЖНО: из lab08 теперь экспортируется SourceLoc
 } from '../../lab08';
 
 // ---------- Предикаты ----------
@@ -24,39 +25,46 @@ export type Predicate =
 
 export interface TruePredicate {
   kind: 'true';
+  loc?: SourceLoc;
 }
 
 export interface FalsePredicate {
   kind: 'false';
+  loc?: SourceLoc;
 }
 
 export interface ComparisonPredicate {
   kind: 'comparison';
   left: Expr;
-  op: ComparisonCond['op']; // "==", "!=", "<", ">", "<=", ">="
+  op: ComparisonCond['op'];
   right: Expr;
+  loc?: SourceLoc;
 }
 
 export interface NotPredicate {
   kind: 'not';
   inner: Predicate;
+  loc?: SourceLoc;
 }
 
 export interface AndPredicate {
   kind: 'and';
   left: Predicate;
   right: Predicate;
+  loc?: SourceLoc;
 }
 
 export interface OrPredicate {
   kind: 'or';
   left: Predicate;
   right: Predicate;
+  loc?: SourceLoc;
 }
 
 export interface ParenPredicate {
   kind: 'paren';
   inner: Predicate;
+  loc?: SourceLoc;
 }
 
 export type QuantifierKind = 'forall' | 'exists';
@@ -66,12 +74,14 @@ export interface QuantifierPredicate {
   quantifier: QuantifierKind;
   variable: ParameterDef; // имя + тип (как в параметрах функции)
   predicate: Predicate;
+  loc?: SourceLoc;
 }
 
 export interface FormulaRefPredicate {
   kind: 'formulaRef';
   name: string;
   args: Expr[];
+  loc?: SourceLoc;
 }
 
 // ---------- Формулы ----------
@@ -81,25 +91,24 @@ export interface FormulaDef {
   name: string;
   parameters: ParameterDef[];
   body: Predicate;
+  loc?: SourceLoc;
 }
 
 // ---------- Аннотированные конструкции ----------
 
 export interface AnnotatedWhileStmt extends FunnyWhileStmt {
-  // while (cond) invariant <Predicate> stmt;
   invariant?: Predicate;
+  loc?: SourceLoc;
 }
 
 export interface AnnotatedFunction extends FunnyFunctionDef {
-  // requires / ensures в аннотациях функции
   requires?: Predicate;
   ensures?: Predicate;
+  loc?: SourceLoc;
 }
 
-// Модуль: тот же, что в lab08, плюс:
-//   - функции с аннотациями
-//   - список формул
 export interface AnnotatedModule extends FunnyModule {
   functions: AnnotatedFunction[];
   formulas: FormulaDef[];
+  loc?: SourceLoc;
 }

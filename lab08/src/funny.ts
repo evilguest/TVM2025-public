@@ -1,5 +1,13 @@
 import * as arith from "../../lab04";
 
+export interface SourceLoc {
+    file?: string;
+    startLine: number;
+    startCol: number;
+    endLine?: number;
+    endCol?: number;
+}
+
 export const enum ErrorCode {
     ParseError = 'E_PARSE_ERROR',
     DuplicateFunction = 'E_DUPLICATE_FUNCTION',
@@ -33,6 +41,7 @@ export class FunnyError extends Error {
 export interface Module {
     type: "module";
     functions: FunctionDef[];
+    loc?: SourceLoc;
 }
 
 export interface FunctionDef {
@@ -42,6 +51,7 @@ export interface FunctionDef {
     returns: ParameterDef[];
     locals: ParameterDef[];
     body: Statement;
+    loc?: SourceLoc;
 }
 
 export interface ParameterDef {
@@ -62,23 +72,27 @@ export type LValue = VarLValue | ArrLValue;
 export interface VarLValue {
     type: "lvar";
     name: string;
+    loc?: SourceLoc;
 }
 
 export interface ArrLValue {
     type: "larr";
     name: string;
     index: Expr;
+    loc?: SourceLoc;
 }
 
 export interface AssignStmt {
     type: "assign";
-    targets: LValue[];   // левая часть: один или несколько LValue
-    exprs: Expr[];       // правая часть: одно или несколько выражений
+    targets: LValue[];
+    exprs: Expr[];
+    loc?: SourceLoc;
 }
 
 export interface BlockStmt {
     type: "block";
     stmts: Statement[];
+    loc?: SourceLoc;
 }
 
 export interface IfStmt {
@@ -86,22 +100,24 @@ export interface IfStmt {
     condition: Condition;
     then: Statement;
     else: Statement | null;
+    loc?: SourceLoc;
 }
 
 export interface WhileStmt {
     type: "while";
     condition: Condition;
     body: Statement;
+    loc?: SourceLoc;
 }
 
 export interface ExprStmt {
     type: "expr";
     expr: Expr;
+    loc?: SourceLoc;
 }
 
-
 export type Expr =
-    | arith.Expr        
+    | arith.Expr
     | FuncCallExpr
     | ArrAccessExpr;
 
@@ -109,14 +125,15 @@ export interface FuncCallExpr {
     type: "funccall";
     name: string;
     args: Expr[];
+    loc?: SourceLoc;
 }
 
 export interface ArrAccessExpr {
     type: "arraccess";
     name: string;
     index: Expr;
+    loc?: SourceLoc;
 }
-
 
 export type Condition =
     | TrueCond
@@ -129,10 +146,12 @@ export type Condition =
 
 export interface TrueCond {
     kind: "true";
+    loc?: SourceLoc;
 }
 
 export interface FalseCond {
     kind: "false";
+    loc?: SourceLoc;
 }
 
 export interface ComparisonCond {
@@ -140,26 +159,31 @@ export interface ComparisonCond {
     left: Expr;
     op: "==" | "!=" | ">" | "<" | ">=" | "<=";
     right: Expr;
+    loc?: SourceLoc;
 }
 
 export interface NotCond {
     kind: "not";
     condition: Condition;
+    loc?: SourceLoc;
 }
 
 export interface AndCond {
     kind: "and";
     left: Condition;
     right: Condition;
+    loc?: SourceLoc;
 }
 
 export interface OrCond {
     kind: "or";
     left: Condition;
     right: Condition;
+    loc?: SourceLoc;
 }
 
 export interface ParenCond {
     kind: "paren";
     inner: Condition;
+    loc?: SourceLoc;
 }
