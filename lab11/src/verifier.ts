@@ -183,6 +183,71 @@ function getLocFromPredicate(pred: Predicate | any): SourceLoc | undefined {
   }
 }
 
+function isTrivialLoc(loc?: SourceLoc): boolean {
+  return !!loc && loc.startLine === 1 && loc.startCol === 1 && (loc.endLine ?? 1) === 1 && (loc.endCol ?? 1) === 1;
+}
+
+function findBestLocDeep(node: any): SourceLoc | undefined {
+  if (!node) return undefined;
+
+  const here = readLocFromAny(node);
+  if (here && !isTrivialLoc(here)) return here;
+
+  // Predicate kinds
+  switch (node.kind) {
+    case "comparison":
+      return findBestLocDeep(node.left) ?? findBestLocDeep(node.right) ?? here;
+    case "and":
+    case "or":
+      return findBestLocDeep(node.left) ?? findBestLocDeep(node.right) ?? here;
+    case "not":
+      return findBestLocDeep(node.inner ?? node.predicate) ?? here;
+    case "paren":
+      return findBestLocDeep(node.inner) ?? here;
+    case "implies":
+      return findBestLocDeep(node.right) ?? findBestLocDeep(node.left) ?? here;
+    case "quantifier":
+      return findBestLocDeep(node.predicate) ?? here;
+    case "formulaRef":
+      for (const a of node.args ?? []) {
+        const r = findBestLocDeep(a);
+        if (r && !isTrivialLoc(r)) return r;
+      }
+      return here;
+  }
+
+  // Expr kinds (arith)
+  switch (node.kind) {
+    case "Neg":
+      return findBestLocDeep(node.expr ?? node.inner) ?? here;
+    case "Add":
+    case "Sub":
+    case "Mul":
+    case "Div":
+      return findBestLocDeep(node.left) ?? findBestLocDeep(node.right) ?? here;
+    case "Var":
+    case "Ident":
+    case "Num":
+    case "Int":
+      return here;
+  }
+
+  // lab08 extra expressions
+  const t = tag(node);
+  if (t === "funccall") {
+    for (const a of node.args ?? []) {
+      const r = findBestLocDeep(a);
+      if (r && !isTrivialLoc(r)) return r;
+    }
+    return here;
+  }
+  if (t === "arraccess") {
+    return findBestLocDeep(node.index) ?? here;
+  }
+
+  return here;
+}
+
 // -------------------- Z3 init --------------------
 
 let z3Context: Context | null = null;
@@ -321,20 +386,30 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
   const results: VerificationResult[] = [];
   let hasFailure = false;
 
-  // NEW: запоминаем первую ошибку + её loc, чтобы кинуть корректный FunnyError в конце
+  // первая ошибка (для throw в конце)
   let firstFailedFunc: string | null = null;
   let firstFailedLoc: SourceLoc | undefined;
 
   z3 = await initZ3();
 
+  // helper: берём первую НЕ тривиальную локацию
+  const pickBestLoc = (...locs: Array<SourceLoc | undefined>) => {
+    for (const l of locs) {
+      if (l && !isTrivialLoc(l)) return l;
+    }
+   
+    return locs.find(Boolean);
+  };
+
   for (const func of module.functions) {
     const solver = new z3.Solver();
 
+    
     try {
       solver.set("timeout", 5000);
       solver.set("smt.mbqi", true);
     } catch {
-      // ignore
+      
     }
 
     try {
@@ -346,6 +421,11 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
         continue;
       }
 
+      const ensuresLocOriginal = func.ensures ? findBestLocDeep(func.ensures) : undefined;
+      const requiresLocOriginal = func.requires ? findBestLocDeep(func.requires) : undefined;
+      const funcLoc = readLocFromAny(func);
+
+     
       const vc = buildFunctionVerificationConditions(func, module);
       const env = buildEnvironment(func, z3);
 
@@ -354,13 +434,10 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
 
       const verified = proof.result === "unsat";
 
-      // NEW: выбираем локацию “где именно сломалось”
+      
       const vcLoc = getLocFromPredicate(vc);
-      const ensuresLoc = func.ensures ? readLocFromAny(func.ensures) ?? getLocFromPredicate(func.ensures) : undefined;
-      const requiresLoc = func.requires ? readLocFromAny(func.requires) ?? getLocFromPredicate(func.requires) : undefined;
-      const funcLoc = readLocFromAny(func);
 
-      const bestLoc = vcLoc ?? ensuresLoc ?? requiresLoc ?? funcLoc;
+      const bestLoc = pickBestLoc(vcLoc, ensuresLocOriginal, requiresLocOriginal, funcLoc);
 
       results.push({
         function: func.name,
@@ -383,10 +460,13 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
       }
     } catch (e: any) {
       hasFailure = true;
+
       if (!firstFailedFunc) {
         firstFailedFunc = func.name;
-        // если упали исключением — пробуем хотя бы loc функции
-        firstFailedLoc = readLocFromAny(func) ?? undefined;
+        // если упали исключением — пробуем loc из самого исключения, иначе из функции
+        const locFromErr = readLocFromAny(e);
+        const locFromFunc = readLocFromAny(func);
+        firstFailedLoc = pickBestLoc(locFromErr, locFromFunc);
       }
 
       results.push({
@@ -398,9 +478,11 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
   }
 
   if (hasFailure) {
-    const failed = results.filter((r) => !r.verified).map((r) => r.function).join(", ");
+    const failed = results
+      .filter((r) => !r.verified)
+      .map((r) => r.function)
+      .join(", ");
 
-    // NEW: кидаем FunnyError с координатами (чтобы тесты могли проверить startLine/startCol/...)
     if (firstFailedLoc) {
       throw new FunnyError(
         `Verification failed for: ${failed}`,
@@ -412,12 +494,12 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
       );
     }
 
-    // если loc вообще нет — кидаем без координат
     throw new FunnyError(`Verification failed for: ${failed}`, VERIFICATION_FAILED_CODE);
   }
 
   return results;
 }
+
 
 // -------------------- prover --------------------
 
@@ -1185,7 +1267,7 @@ function convertFuncCallExprToZ3(
     return lengthFun.call(arr as any);
   }
 
-  // ✅ ДЕТЕРМИНИРОВАННЫЙ resName + КЕШ (КРИТИЧНО ДЛЯ factorial)
+  //ДЕТЕРМИНИРОВАННЫЙ resName + КЕШ (КРИТИЧНО ДЛЯ factorial)
   const argsZ3 = call.args.map((a) => convertExprToZ3(a, env, z3, module, solver));
   const argKey = argsZ3.map((a: any) => a.toString()).join("_");
   const resName = `${call.name}_result_${argKey}`;

@@ -36,19 +36,25 @@ import {
 let currentOrigin: string | undefined;
 
 function intervalToLoc(interval: any): SourceLoc {
-  const src = interval?.source;
-  const startIdx = interval?.startIdx ?? 0;
-  const endIdx = interval?.endIdx ?? startIdx;
+  // interval может быть Interval или Node.
+  // Нормальный путь: interval.source (Interval) -> Source с getLineAndColumn
+  const src =
+    interval?.source?.getLineAndColumn
+      ? interval.source
+      : interval?._node?.source?.getLineAndColumn
+        ? interval._node.source
+        : interval?.getLineAndColumn
+          ? interval
+          : undefined;
+
+  const startIdx = interval?.startIdx ?? interval?._node?.source?.startIdx ?? 0;
+  const endIdx = interval?.endIdx ?? interval?._node?.source?.endIdx ?? startIdx;
 
   const start =
-    typeof src?.getLineAndColumn === 'function'
-      ? src.getLineAndColumn(startIdx)
-      : { lineNum: 1, colNum: 1 };
+    typeof src?.getLineAndColumn === "function" ? src.getLineAndColumn(startIdx) : { lineNum: 1, colNum: 1 };
 
   const end =
-    typeof src?.getLineAndColumn === 'function'
-      ? src.getLineAndColumn(endIdx)
-      : { lineNum: start.lineNum, colNum: start.colNum };
+    typeof src?.getLineAndColumn === "function" ? src.getLineAndColumn(endIdx) : { lineNum: start.lineNum, colNum: start.colNum };
 
   return {
     file: currentOrigin,
@@ -59,31 +65,21 @@ function intervalToLoc(interval: any): SourceLoc {
   };
 }
 
-function attachLoc<T extends object>(node: T, loc: SourceLoc): T {
-  (node as any).loc = loc;
+
+function attachLoc<T extends object>(node: T, loc?: SourceLoc): T {
+  if (!node || typeof node !== "object") return node;
+  if (!loc) return node;
+  const anyN: any = node;
+  // НЕ перетираем существующую локацию
+  if (!anyN.loc) anyN.loc = loc;
   return node;
 }
+
 
 // ----------------- утилиты -----------------
 
 function collectList<T>(node: any): T[] {
   return node.asIteration().children.map((c: any) => c.parse() as T);
-}
-
-function foldLogicalChain<T>(
-  first: any,
-  rest: any,
-  makeNode: (left: T, right: T, loc: SourceLoc) => T
-): T {
-  let node = first.parse() as T;
-  const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
-  for (const r of restChildren) {
-    const rhs = r.parse() as T;
-    // loc берём с текущей позиции цепочки
-    const loc = intervalToLoc(r.source ?? r._node?.source ?? r);
-    node = makeNode(node, rhs, loc);
-  }
-  return node;
 }
 
 function repeatPrefix<T>(
@@ -161,14 +157,14 @@ const getFunnierAst = {
         : [];
 
     const requires =
-      requiresOpt.children.length > 0
-        ? attachLoc(requiresOpt.child(0).parse() as Predicate, intervalToLoc(requiresOpt.source ?? requiresOpt))
-        : undefined;
+  requiresOpt.children.length > 0
+    ? (requiresOpt.child(0).parse() as Predicate) // loc уже стоит в RequiresSpec
+    : undefined;
 
-    const ensures =
-      ensuresOpt.children.length > 0
-        ? attachLoc(ensuresOpt.child(0).parse() as Predicate, intervalToLoc(ensuresOpt.source ?? ensuresOpt))
-        : undefined;
+const ensures =
+  ensuresOpt.children.length > 0
+    ? (ensuresOpt.child(0).parse() as Predicate) // loc уже стоит в EnsuresSpec
+    : undefined;
 
     const body = stmt.parse() as Statement;
 
@@ -202,9 +198,9 @@ const getFunnierAst = {
 
     const condition = cond.parse() as Condition;
     const invariant =
-      invOpt.children.length > 0
-        ? attachLoc(invOpt.child(0).parse() as Predicate, intervalToLoc(invOpt.source ?? invOpt))
-        : undefined;
+  invOpt.children.length > 0
+    ? (invOpt.child(0).parse() as Predicate) // loc уже стоит в InvariantSpec
+    : undefined;
 
     const bodyStmt = body.parse() as Statement;
 
@@ -250,53 +246,65 @@ const getFunnierAst = {
     return orNode.parse() as Predicate;
   },
 
-  OrPred(first: any, _ops: any, rest: any) {
-    const loc = intervalToLoc(this.source);
-    // цепочка: A (or/-> B)*
-    let node = first.parse() as Predicate;
-    const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
-    for (const r of restChildren) {
-      const rhs = r.parse() as Predicate;
-      node = {
-        kind: 'or',
-        left: node,
-        right: rhs,
-        loc,
-      } as any as OrPredicate;
-    }
-    return node;
-  },
+ OrPred(first: any, _ops: any, rest: any) {
+  const loc = intervalToLoc(this.source);
 
-  AndPred(first: any, _ops: any, rest: any) {
-    const loc = intervalToLoc(this.source);
-    let node = first.parse() as Predicate;
-    const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
-    for (const r of restChildren) {
-      const rhs = r.parse() as Predicate;
-      node = {
-        kind: 'and',
-        left: node,
-        right: rhs,
-        loc,
-      } as any as AndPredicate;
-    }
-    return node;
-  },
+  let node = first.parse() as Predicate;
+  const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
+  for (const r of restChildren) {
+    const rhs = r.parse() as Predicate;
+    node = {
+      kind: "or",
+      left: node,
+      right: rhs,
+      loc,
+    } as any as OrPredicate;
+  }
 
-  NotPred(nots: any, atom: any) {
-    const loc = intervalToLoc(this.source);
-    return repeatPrefix<Predicate>(
-      nots,
-      atom,
-      (inner) =>
-        ({
-          kind: 'not',
-          inner,
-          loc,
-        } as NotPredicate),
-      loc
-    );
-  },
+  //  ВАЖНО: даже если OR-цепочка длины 1 — приклеиваем loc к node,
+  // чтобы simple predicate (comparison) тоже имел координаты.
+  return attachLoc(node as any, loc);
+},
+
+AndPred(first: any, _ops: any, rest: any) {
+  const loc = intervalToLoc(this.source);
+
+  let node = first.parse() as Predicate;
+  const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
+  for (const r of restChildren) {
+    const rhs = r.parse() as Predicate;
+    node = {
+      kind: "and",
+      left: node,
+      right: rhs,
+      loc,
+    } as any as AndPredicate;
+  }
+
+  //  то же самое: единичный comparison теперь получает loc всего AndPred
+  return attachLoc(node as any, loc);
+},
+
+NotPred(nots: any, atom: any) {
+  const loc = intervalToLoc(this.source);
+
+  const node = repeatPrefix<Predicate>(
+    nots,
+    atom,
+    (inner) =>
+      ({
+        kind: "not",
+        inner,
+        loc,
+      } as NotPredicate),
+    loc
+  );
+
+  //  Если not'ов 0, repeatPrefix вернул atom.parse() без оболочки.
+  // Приклеиваем loc, чтобы голый comparison не оставался без координат.
+  return attachLoc(node as any, loc);
+},
+
 
   AtomPred_true(_t: any) {
     const loc = intervalToLoc(this.source);
@@ -384,7 +392,7 @@ const getFunnierAst = {
 export const semantics: FunnySemanticsExt =
   grammar.Funnier.createSemantics() as FunnySemanticsExt;
 
-// ✅ фикс типизации ohm action dict
+// фикс типизации ohm action dict
 semantics.addOperation('parse()', getFunnierAst as any);
 
 export interface FunnySemanticsExt extends Semantics {

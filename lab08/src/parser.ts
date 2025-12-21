@@ -24,9 +24,19 @@ type PosInfo = {
 let currentOrigin: string | undefined;
 
 function intervalToLoc(interval: any): ast.SourceLoc {
-  const src = interval?.source;
-  const startIdx = interval?.startIdx ?? 0;
-  const endIdx = interval?.endIdx ?? startIdx;
+  // interval может быть Interval или Node.
+  // В Ohm иногда source лежит не прямо в interval.source, а в interval._node.source
+  const src =
+    interval?.source?.getLineAndColumn
+      ? interval.source
+      : interval?._node?.source?.getLineAndColumn
+        ? interval._node.source
+        : interval?.getLineAndColumn
+          ? interval
+          : undefined;
+
+  const startIdx = interval?.startIdx ?? interval?._node?.source?.startIdx ?? 0;
+  const endIdx = interval?.endIdx ?? interval?._node?.source?.endIdx ?? startIdx;
 
   const start =
     typeof src?.getLineAndColumn === "function"
@@ -46,6 +56,7 @@ function intervalToLoc(interval: any): ast.SourceLoc {
     endCol: end.colNum,
   };
 }
+
 
 export function fail(code: ErrorCode, message: string, pos: PosInfo = {}): never {
   const { startLine, startCol, endLine, endCol } = pos;
@@ -541,7 +552,7 @@ export const getFunnyAst: FunnyActionDict<any> = {
 };
 
 export const semantics: FunnySemanticsExt = grammar.Funny.createSemantics() as FunnySemanticsExt;
-// ✅ фикс типизации ohm action dict
+// фикс типизации ohm action dict
 semantics.addOperation("parse()", getFunnyAst as any);
 
 export interface FunnySemanticsExt extends FunnySemantics {
@@ -551,7 +562,7 @@ interface FunnyActionsExt {
   parse(): ast.Module;
 }
 
-// ✅ Сигнатура не ломает старый код: origin необязателен
+//Сигнатура не ломает старый код: origin необязателен
 export function parseFunny(source: string, origin?: string): ast.Module {
   currentOrigin = origin;
 
